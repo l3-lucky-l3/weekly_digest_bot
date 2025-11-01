@@ -29,11 +29,7 @@ class Database:
                 # Таблица для отслеживаемых чатов
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS monitored_chats (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        chat_id TEXT UNIQUE NOT NULL,
-                        chat_name TEXT,
-                        is_active BOOLEAN DEFAULT 1,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        chat_id BIGINT PRIMARY KEY UNIQUE NOT NULL
                     )
                 ''')
 
@@ -104,23 +100,23 @@ class Database:
             return False
 
     # Методы для работы с отслеживаемыми чатами
-    def add_monitored_chat(self, chat_id: str, chat_name: str = "") -> bool:
+    def add_monitored_chat(self, chat_id: int) -> bool:
         """Добавляет чат для мониторинга"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "INSERT OR REPLACE INTO monitored_chats (chat_id, chat_name) VALUES (?, ?)",
-                    (chat_id, chat_name)
+                    "INSERT OR REPLACE INTO monitored_chats (chat_id) VALUES (?)",
+                    (chat_id,)
                 )
                 conn.commit()
-                logger.info(f"Чат '{chat_name}' ({chat_id}) добавлен для мониторинга")
+                logger.info(f"Чат {chat_id} добавлен для мониторинга")
                 return True
         except Exception as e:
             logger.error(f"Ошибка добавления чата: {e}")
             return False
 
-    def remove_monitored_chat(self, chat_id: str) -> bool:
+    def remove_monitored_chat(self, chat_id: int) -> bool:
         """Удаляет чат из мониторинга"""
         try:
             with sqlite3.connect(self.db_path) as conn:
@@ -140,9 +136,9 @@ class Database:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT chat_id, chat_name, is_active FROM monitored_chats")
+                cursor.execute("SELECT chat_id FROM monitored_chats")
                 rows = cursor.fetchall()
-                return [{"chat_id": row[0], "chat_name": row[1], "is_active": bool(row[2])} for row in rows]
+                return [row[0] for row in rows]
         except Exception as e:
             logger.error(f"Ошибка получения чатов: {e}")
             return []

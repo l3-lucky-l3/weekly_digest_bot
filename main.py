@@ -1,10 +1,10 @@
 import os
 import asyncio
 import logging
-from datetime import datetime, time
+from datetime import datetime
 from dotenv import load_dotenv
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import Command, Filter
 from aiogram.types import Message
 from ai_client import AIClient
 from db import Database
@@ -35,20 +35,26 @@ chat_messages = {}
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     welcome_text = """
-🤖 Бот мониторинга чатов и AI-анализа
+🚀 Weekly-дайджест бот
 
-Я отслеживаю сообщения в чатах, анализирую их с помощью AI и публикую сводки в канал.
+Мониторинг чатов сообщества и создание еженедельных дайджестов.
+
+📅 Расписание:
+• Пн 10:00 - цели/блокеры недели
+• Пт 19:00 - Weekly Digest
+
+📋 Как добавить чат в мониторинг:
+• Для публичных чатов/каналов - перешлите любое сообщение из чата
+• Для приватных чатов - добавьте меня в чат и используйте /get_chat_id
 
 Основные команды:
 /get_chat_id - показать ID текущего чата
-/monitor_chat - добавить текущий чат для мониторинга
-/stop_monitor - остановить мониторинг чата
+/add_chat <id_чата> - добавить чат для мониторинга
+/remove_chat <id_чата> - удалить чат из мониторинга
 /list_chats - список отслеживаемых чатов
-/set_schedule <время> - установить время постинга (например: /set_schedule 18:00)
 /add_model <название> <модель> - добавить AI модель
+/remove_model <название> - удалить AI модель
 /models - список AI моделей
-
-💡 Просто перешлите любое сообщение из чата, и я покажу его ID!
 """
     await message.answer(welcome_text)
 
@@ -60,101 +66,102 @@ async def cmd_get_chat_id(message: Message):
     try:
         chat_id = message.chat.id
         chat_type = message.chat.type
+
+        # Определяем русское название типа чата
+        chat_type_names = {
+            "channel": "Канал",
+            "group": "Группа",
+            "supergroup": "Супергруппа",
+            "private": "Личные сообщения"
+        }
+        chat_type_name = chat_type_names.get(chat_type, chat_type)
         chat_title = message.chat.title or "Без названия"
 
         response = f"""
-📋 Информация о чате:
-• ID: `{chat_id}`
-• Тип: {chat_type}
-• Название: {chat_title}
+📋 <b>Информация о текущем чате:</b>
+
+<b>Тип:</b> {chat_type_name}
+<b>ID:</b> <code>{chat_id}</code>
+<b>Название:</b> {chat_title}
+
+💡 <i>Чтобы добавить в мониторинг используйте:</i>
+<code>/add_chat {chat_id}</code>
 """
-        await message.answer(response, parse_mode="Markdown")
+        await message.answer(response, parse_mode="HTML")
 
     except Exception as e:
         logger.error(f"Error getting chat ID: {e}")
         await message.answer("❌ Ошибка при получении ID чата")
 
 
-# Также можно сделать обработчик для пересланных сообщений
+# Обработчик для пересланных сообщений только из чатов/каналов
 @dp.message(F.forward_from_chat)
 async def handle_forwarded_message(message: Message):
-    """Обрабатывает пересланные сообщения и показывает ID исходного чата"""
+    """Обрабатывает пересланные сообщения и показывает ID чата/канала"""
     try:
         if message.forward_from_chat:
-            chat_id = message.forward_from_chat.id
-            chat_type = message.forward_from_chat.type
-            chat_title = message.forward_from_chat.title or "Без названия"
+            chat = message.forward_from_chat
 
             response = f"""
-📋 Информация о пересланном чате:
-• ID: `{chat_id}`
-• Тип: {chat_type}
-• Название: {chat_title}
+📋 Информация о пересланном чате/канале:
 
-💡 Чтобы добавить этот чат в мониторинг, используйте:
-/monitor_chat
+Тип: {chat.type}
+ID: {chat.id}
+Название: {chat.title or "Без названия"}
+
+💡 Чтобы добавить в мониторинг используйте:
+<code>/add_chat {chat.id}</code>
 """
-            await message.answer(response, parse_mode="Markdown")
+            await message.answer(response, parse_mode="HTML")
         else:
-            await message.answer("❌ Это сообщение не содержит информации о чате")
+            await message.answer("❌ Это не пересланное сообщение из чата/канала")
 
     except Exception as e:
         logger.error(f"Error processing forwarded message: {e}")
         await message.answer("❌ Ошибка при обработке пересланного сообщения")
 
 
-# Обработчик для любых сообщений с просьбой показать ID
-@dp.message(F.text.contains("id чата"))
-@dp.message(F.text.contains("chat id"))
-@dp.message(F.text.contains("ID чата"))
-async def handle_chat_id_request(message: Message):
-    """Отвечает на запросы о ID чата"""
-    chat_id = message.chat.id
-    chat_type = message.chat.type
-    chat_title = message.chat.title or "Без названия"
-
-    response = f"""
-💡 ID этого чата: `{chat_id}`
-Тип: {chat_type}
-Название: {chat_title}
-
-Для полной информации используйте /get_chat_id
-"""
-    await message.answer(response, parse_mode="Markdown")
-
-
-# Обработчик команды /monitor_chat
-@dp.message(Command("monitor_chat"))
-async def cmd_monitor_chat(message: Message):
+# Обработчик команды /add_chat
+@dp.message(Command("add_chat"))
+async def cmd_add_chat(message: Message):
     try:
-        chat_id = str(message.chat.id)
-        chat_name = message.chat.title or "Без названия"
+        args = message.text.split()[1:]
+        if not args:
+            await message.answer("❌ Использование: /add_chat <id_чата>\nПример: /add_chat -100123456789")
+            return
 
-        if db.add_monitored_chat(chat_id, chat_name):
+        chat_id = args[0]
+
+        if db.add_monitored_chat(chat_id):
             chat_messages[chat_id] = []
-            await message.answer(f"✅ Чат '{chat_name}' добавлен в мониторинг")
+            await message.answer(f"✅ Чат с ID {chat_id} добавлен в мониторинг")
         else:
             await message.answer("❌ Ошибка при добавлении чата в мониторинг")
     except Exception as e:
-        logger.error(f"Error monitoring chat: {e}")
+        logger.error(f"Error adding chat: {e}")
         await message.answer("❌ Ошибка при добавлении чата в мониторинг")
 
 
-# Обработчик команды /stop_monitor
-@dp.message(Command("stop_monitor"))
-async def cmd_stop_monitor(message: Message):
+# Обработчик команды /remove_chat
+@dp.message(Command("remove_chat"))
+async def cmd_remove_chat(message: Message):
     try:
-        chat_id = str(message.chat.id)
+        args = message.text.split()[1:]
+        if not args:
+            await message.answer("❌ Использование: /remove_chat <id_чата>\nПример: /remove_chat -100123456789")
+            return
+
+        chat_id = args[0]
 
         if db.remove_monitored_chat(chat_id):
             if chat_id in chat_messages:
                 del chat_messages[chat_id]
-            await message.answer("✅ Мониторинг чата остановлен")
+            await message.answer(f"✅ Чат {chat_id} удален из мониторинга")
         else:
-            await message.answer("❌ Чат не найден в списке мониторинга")
+            await message.answer(f"❌ Чат {chat_id} не найден в списке мониторинга")
     except Exception as e:
-        logger.error(f"Error stopping monitor: {e}")
-        await message.answer("❌ Ошибка при остановке мониторинга")
+        logger.error(f"Error removing chat: {e}")
+        await message.answer("❌ Ошибка при удалении чата")
 
 
 # Обработчик команды /list_chats
@@ -166,38 +173,11 @@ async def cmd_list_chats(message: Message):
             await message.answer("📊 Нет отслеживаемых чатов")
             return
 
-        chats_list = "\n".join([f"• {chat['chat_name']} ({chat['chat_id']})" for chat in chats])
-        await message.answer(f"📊 Отслеживаемые чаты:\n{chats_list}")
+        chats_list = "\n".join([f"• ID {chat_id}" for chat_id in chats])
+        await message.answer(f"📊 Отслеживаемые чаты:\n{chats_list}", parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Error listing chats: {e}")
         await message.answer("❌ Ошибка при получении списка чатов")
-
-
-# Обработчик команды /set_schedule
-@dp.message(Command("set_schedule"))
-async def cmd_set_schedule(message: Message):
-    try:
-        args = message.text.split()[1:]
-        if not args:
-            await message.answer("❌ Использование: /set_schedule <время>\nПример: /set_schedule 18:00")
-            return
-
-        post_time = args[0]
-
-        # Проверяем формат времени
-        try:
-            datetime.strptime(post_time, "%H:%M")
-        except ValueError:
-            await message.answer("❌ Неверный формат времени. Используйте ЧЧ:ММ (например: 18:00)")
-            return
-
-        if CHANNEL_ID and db.set_posting_schedule(CHANNEL_ID, post_time):
-            await message.answer(f"✅ Расписание установлено: ежедневно в {post_time}")
-        else:
-            await message.answer("❌ Ошибка установки расписания. Проверьте CHANNEL_ID в .env")
-    except Exception as e:
-        logger.error(f"Error setting schedule: {e}")
-        await message.answer("❌ Ошибка при установке расписания")
 
 
 # Обработчик команды /add_model
@@ -222,6 +202,26 @@ async def cmd_add_model(message: Message):
         await message.answer("❌ Ошибка при добавлении AI модели")
 
 
+# Обработчик команды /remove_model
+@dp.message(Command("remove_model"))
+async def cmd_remove_model(message: Message):
+    try:
+        args = message.text.split()[1:]
+        if not args:
+            await message.answer("❌ Использование: /remove_model <название>\nПример: /remove_model deepseek")
+            return
+
+        model_key = args[0]
+
+        if ai_client.remove_model(model_key):
+            await message.answer(f"✅ AI модель '{model_key}' удалена")
+        else:
+            await message.answer(f"❌ AI модель '{model_key}' не найдена")
+    except Exception as e:
+        logger.error(f"Error removing model: {e}")
+        await message.answer("❌ Ошибка при удалении AI модели")
+
+
 # Обработчик команды /models
 @dp.message(Command("models"))
 async def cmd_models(message: Message):
@@ -233,11 +233,33 @@ async def cmd_models(message: Message):
         await message.answer("❌ Ошибка при получении списка AI моделей")
 
 
-# Обработчик ВСЕХ сообщений в отслеживаемых чатах
-@dp.message(F.chat.id.in_([chat["chat_id"] for chat in db.get_monitored_chats()]))
+# Обработчик всех сообщений в отслеживаемых чатах
+class MonitoredChatsFilter(Filter):
+    def __init__(self, db):
+        self.db = db
+
+    async def __call__(self, message: Message) -> bool:
+        # Всегда получаем свежий список из БД
+        monitored_chats = self.db.get_monitored_chats()
+        chat_ids = [chat_id for chat_id in monitored_chats]
+        return message.chat.id in chat_ids
+
+
+# Обработчик для групп и супергрупп
+@dp.message(MonitoredChatsFilter(db))
 async def handle_monitored_messages(message: Message):
+    await process_chat_message(message)
+
+
+# Обработчик для каналов
+@dp.channel_post(MonitoredChatsFilter(db))
+async def handle_monitored_channel_posts(message: Message):
+    await process_chat_message(message)
+
+
+async def process_chat_message(message: Message):
     try:
-        chat_id = str(message.chat.id)
+        chat_id = message.chat.id
 
         if chat_id not in chat_messages:
             chat_messages[chat_id] = []
@@ -254,9 +276,58 @@ async def handle_monitored_messages(message: Message):
         logger.error(f"Error handling monitored message: {e}")
 
 
-# Функция для создания и отправки сводки
-async def create_and_post_summary():
-    """Создает сводку и публикует в канал"""
+# Функция для создания понедельничного поста (цели/блокеры)
+async def create_monday_post():
+    """Создает пост с целями/блокерами на неделю"""
+    try:
+        if not CHANNEL_ID:
+            logger.error("CHANNEL_ID не установлен в .env")
+            return
+
+        all_messages = []
+        for chat_id, messages in chat_messages.items():
+            if messages:
+                all_messages.extend(messages[-20:])  # Берем последние 20 сообщений из каждого чата
+
+        if not all_messages:
+            logger.info("Нет сообщений для анализа по понедельникам")
+            return
+
+        prompt = f"""
+На основе сообщений из чатов сообщества за последние дни, предложи цели и возможные блокеры на текущую неделю.
+
+Сообщения из чатов:
+{"; ".join(all_messages)}
+
+Формат ответа:
+🎯 Цели недели:
+1. [цель 1]
+2. [цель 2]
+
+🛑 Возможные блокеры:
+• [блокер 1]
+• [блокер 2]
+
+💡 Рекомендации:
+- [рекомендация]
+
+Будь конкретным и ориентированным на действие.
+"""
+
+        analysis = ai_client.send_request(prompt, list(ai_client.models.keys())[0])
+
+        post_text = f"📅 **Понедельник: Цели и блокеры недели**\n\n{analysis}"
+
+        await bot.send_message(chat_id=CHANNEL_ID, text=post_text, parse_mode="Markdown")
+        logger.info(f"Понедельничный пост опубликован в канал {CHANNEL_ID}")
+
+    except Exception as e:
+        logger.error(f"Error creating Monday post: {e}")
+
+
+# Функция для создания пятничного дайджеста
+async def create_friday_digest():
+    """Создает еженедельный дайджест"""
     try:
         if not CHANNEL_ID:
             logger.error("CHANNEL_ID не установлен в .env")
@@ -268,38 +339,61 @@ async def create_and_post_summary():
                 all_messages.extend(messages)
 
         if not all_messages:
-            logger.info("Нет сообщений для анализа")
+            logger.info("Нет сообщений для Friday Digest")
             return
 
-        # Анализируем сообщения с помощью AI
-        analysis = ai_client.analyze_chat_messages(all_messages)
+        prompt = f"""
+Создай еженедельный дайджест на основе сообщений из чатов сообщества.
 
-        # Форматируем для канала
-        formatted_post = ai_client.format_for_channel(analysis)
+Сообщения из чатов:
+{"; ".join(all_messages)}
 
-        # Публикуем в канал
-        await bot.send_message(chat_id=CHANNEL_ID, text=formatted_post)
-        logger.info(f"Сводка опубликована в канал {CHANNEL_ID}")
+Структура дайджеста:
+👥 Новые участники
+💡 Идеи 
+🔬 Лаб (next/stop)
+🚀 Апдейты проектов
+🆘 Помощь 
+🛠️ Инструмент недели
+✅ Решения
 
-        # Очищаем сообщения после публикации
+Будь кратким, информативным и используй эмодзи для наглядности.
+"""
+
+        analysis = ai_client.send_request(prompt, list(ai_client.models.keys())[0])
+
+        post_text = f"📊 **Weekly Digest**\n\n{analysis}"
+
+        await bot.send_message(chat_id=CHANNEL_ID, text=post_text, parse_mode="Markdown")
+        logger.info(f"Friday Digest опубликован в канал {CHANNEL_ID}")
+
+        # Очищаем сообщения после публикации дайджеста
         for chat_id in chat_messages:
             chat_messages[chat_id] = []
 
     except Exception as e:
-        logger.error(f"Error creating and posting summary: {e}")
+        logger.error(f"Error creating Friday digest: {e}")
 
 
-# Задача для периодического постинга
+# Задачи для расписания постинга
 async def scheduled_posting():
     """Запускает периодическую проверку времени для постинга"""
     while True:
         try:
-            schedule = db.get_posting_schedule()
-            if schedule:
-                current_time = datetime.now().strftime("%H:%M")
-                if current_time == schedule["post_time"]:
-                    await create_and_post_summary()
-                    await asyncio.sleep(60)  # Ждем минуту чтобы не повторять
+            now = datetime.now()
+            current_time = now.strftime("%H:%M")
+            weekday = now.strftime("%A")
+
+            # Понедельник 10:00 - цели/блокеры
+            if weekday == "Monday" and current_time == "10:00":
+                await create_monday_post()
+                await asyncio.sleep(60)
+
+            # Пятница 19:00 - Weekly Digest
+            elif weekday == "Friday" and current_time == "19:00":
+                await create_friday_digest()
+                await asyncio.sleep(60)
+
             await asyncio.sleep(30)  # Проверяем каждые 30 секунд
         except Exception as e:
             logger.error(f"Error in scheduled posting: {e}")
@@ -308,12 +402,12 @@ async def scheduled_posting():
 
 # Запуск бота
 async def main():
-    logger.info("Бот мониторинга запускается...")
+    logger.info("🚀 Weekly-дайджест бот запускается...")
 
     # Загружаем отслеживаемые чаты в память
     chats = db.get_monitored_chats()
-    for chat in chats:
-        chat_messages[chat["chat_id"]] = []
+    for chat_id in chats:
+        chat_messages[chat_id] = []
 
     stats = ai_client.get_stats()
     logger.info(f"AI моделей: {stats['ai_models']}")

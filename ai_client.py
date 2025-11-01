@@ -56,13 +56,13 @@ class AIClient:
         try:
             # Используем первую доступную модель
             model_key = list(self.models.keys())[0]
-            return self._send_request(prompt, model_key)
+            return self.send_request(prompt, model_key)
         except Exception as e:
             logger.error(f"Ошибка анализа сообщений: {e}")
             # Пробуем другие модели при ошибке
             for model_key in list(self.models.keys())[1:]:
                 try:
-                    return self._send_request(prompt, model_key)
+                    return self.send_request(prompt, model_key)
                 except Exception:
                     continue
             return f"❌ Все AI модели недоступны для анализа: {str(e)}"
@@ -88,12 +88,12 @@ class AIClient:
 
         try:
             model_key = list(self.models.keys())[0]
-            return self._send_request(prompt, model_key)
+            return self.send_request(prompt, model_key)
         except Exception as e:
             logger.error(f"Ошибка форматирования: {e}")
             return content  # Возвращаем оригинальный контент при ошибке
 
-    def _send_request(self, message: str, model_key: str) -> str:
+    def send_request(self, message: str, model_key: str) -> str:
         """Внутренний метод для отправки запроса к AI"""
         model = self.models[model_key]
 

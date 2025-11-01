@@ -93,17 +93,42 @@ class AIClient:
             logger.error(f"Ошибка форматирования: {e}")
             return content  # Возвращаем оригинальный контент при ошибке
 
-    def send_request(self, message: str, model_key: str) -> str:
-        """Внутренний метод для отправки запроса к AI"""
-        model = self.models[model_key]
+    def send_request(self, message: str, model_key: str = None) -> str:
+        """Отправляет запрос к AI с автоматическим переключением моделей при ошибках"""
+        if not self.models:
+            raise Exception("Нет доступных AI моделей")
 
-        completion = self.client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": message}],
-            max_tokens=2000
-        )
+        # Если модель не указана, используем первую доступную
+        if model_key is None:
+            model_key = list(self.models.keys())[0]
 
-        return completion.choices[0].message.content
+        # Пробуем указанную модель сначала
+        models_to_try = [model_key] + [m for m in self.models.keys() if m != model_key]
+
+        last_error = None
+        for current_model_key in models_to_try:
+            try:
+                model = self.models[current_model_key]
+                logger.info(f"🔄 Пробуем модель: {current_model_key} -> {model}")
+
+                completion = self.client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": message}],
+                    max_tokens=2000
+                )
+
+                logger.info(f"✅ Успешно использована модель: {current_model_key}")
+                return completion.choices[0].message.content
+
+            except Exception as e:
+                last_error = e
+                logger.warning(f"❌ Модель {current_model_key} недоступна: {str(e)}")
+                continue
+
+        # Если все модели недоступны
+        error_msg = f"Все AI модели недоступны. Последняя ошибка: {str(last_error)}"
+        logger.error(error_msg)
+        raise Exception(error_msg)
 
     def get_available_models(self) -> str:
         """Возвращает список доступных AI моделей"""

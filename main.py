@@ -287,7 +287,7 @@ async def create_monday_post():
         all_messages = []
         for chat_id, messages in chat_messages.items():
             if messages:
-                all_messages.extend(messages[-20:])  # Берем последние 20 сообщений из каждого чата
+                all_messages.extend(messages[-20:])
 
         if not all_messages:
             logger.info("Нет сообщений для анализа по понедельникам")
@@ -314,8 +314,8 @@ async def create_monday_post():
 Будь конкретным и ориентированным на действие.
 """
 
-        analysis = ai_client.send_request(prompt, list(ai_client.models.keys())[0])
-
+        # Автоматически переключается между моделями при ошибках
+        analysis = ai_client.send_request(prompt)
         post_text = f"📅 **Понедельник: Цели и блокеры недели**\n\n{analysis}"
 
         await bot.send_message(chat_id=CHANNEL_ID, text=post_text, parse_mode="Markdown")
@@ -323,6 +323,8 @@ async def create_monday_post():
 
     except Exception as e:
         logger.error(f"Error creating Monday post: {e}")
+        # TODO? добавить отправку уведомления об ошибке
+        # await bot.send_message(chat_id=ADMIN_ID, text=f"❌ Ошибка понедельничного поста: {e}")
 
 
 # Функция для создания пятничного дайджеста
@@ -360,8 +362,8 @@ async def create_friday_digest():
 Будь кратким, информативным и используй эмодзи для наглядности.
 """
 
-        analysis = ai_client.send_request(prompt, list(ai_client.models.keys())[0])
-
+        # Автоматически переключается между моделями при ошибках
+        analysis = ai_client.send_request(prompt)
         post_text = f"📊 **Weekly Digest**\n\n{analysis}"
 
         await bot.send_message(chat_id=CHANNEL_ID, text=post_text, parse_mode="Markdown")
@@ -373,6 +375,8 @@ async def create_friday_digest():
 
     except Exception as e:
         logger.error(f"Error creating Friday digest: {e}")
+        # TODO?
+        # await bot.send_message(chat_id=ADMIN_ID, text=f"❌ Ошибка пятничного дайджеста: {e}")
 
 
 # Задачи для расписания постинга

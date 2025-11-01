@@ -1,0 +1,15 @@
+services:
+  telegram-bot:
+    build: .
+    container_name: telegram-monitoring-bot
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+      - ./.env:/app/.env:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

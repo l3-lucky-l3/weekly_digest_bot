@@ -1,6 +1,6 @@
 import sqlite3
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -19,10 +19,8 @@ class Database:
                 # Таблица для AI моделей
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS ai_models (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
                         name TEXT UNIQUE NOT NULL,
-                        model_path TEXT NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        model_path TEXT NOT NULL
                     )
                 ''')
 
@@ -33,19 +31,7 @@ class Database:
                     )
                 ''')
 
-                # Таблица для расписания постинга
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS posting_schedule (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        channel_id TEXT NOT NULL,
-                        post_time TEXT NOT NULL,
-                        is_active BOOLEAN DEFAULT 1,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-
                 conn.commit()
-                logger.info("База данных мониторинга инициализирована")
         except Exception as e:
             logger.error(f"Ошибка инициализации БД: {e}")
             raise
@@ -73,10 +59,8 @@ class Database:
                     (name, model_path)
                 )
                 conn.commit()
-                logger.info(f"AI модель '{name}' добавлена в БД")
                 return True
         except sqlite3.IntegrityError:
-            logger.warning(f"AI модель '{name}' уже существует")
             return False
         except Exception as e:
             logger.error(f"Ошибка добавления AI модели: {e}")
@@ -90,10 +74,8 @@ class Database:
                 cursor.execute("DELETE FROM ai_models WHERE name = ?", (name,))
                 conn.commit()
                 if cursor.rowcount > 0:
-                    logger.info(f"AI модель '{name}' удалена из БД")
                     return True
                 else:
-                    logger.warning(f"AI модель '{name}' не найдена в БД")
                     return False
         except Exception as e:
             logger.error(f"Ошибка удаления AI модели: {e}")
@@ -110,7 +92,6 @@ class Database:
                     (chat_id,)
                 )
                 conn.commit()
-                logger.info(f"Чат {chat_id} добавлен для мониторинга")
                 return True
         except Exception as e:
             logger.error(f"Ошибка добавления чата: {e}")
@@ -124,7 +105,6 @@ class Database:
                 cursor.execute("DELETE FROM monitored_chats WHERE chat_id = ?", (chat_id,))
                 conn.commit()
                 if cursor.rowcount > 0:
-                    logger.info(f"Чат {chat_id} удален из мониторинга")
                     return True
                 return False
         except Exception as e:
@@ -142,43 +122,3 @@ class Database:
         except Exception as e:
             logger.error(f"Ошибка получения чатов: {e}")
             return []
-
-    # Методы для работы с расписанием
-    def set_posting_schedule(self, channel_id: str, post_time: str) -> bool:
-        """Устанавливает расписание постинга в канал"""
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "INSERT OR REPLACE INTO posting_schedule (channel_id, post_time) VALUES (?, ?)",
-                    (channel_id, post_time)
-                )
-                conn.commit()
-                logger.info(f"Расписание для канала {channel_id} установлено на {post_time}")
-                return True
-        except Exception as e:
-            logger.error(f"Ошибка установки расписания: {e}")
-            return False
-
-    def get_posting_schedule(self) -> Optional[Dict]:
-        """Получает текущее расписание постинга"""
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT channel_id, post_time FROM posting_schedule WHERE is_active = 1 LIMIT 1")
-                row = cursor.fetchone()
-                return {"channel_id": row[0], "post_time": row[1]} if row else None
-        except Exception as e:
-            logger.error(f"Ошибка получения расписания: {e}")
-            return None
-
-    def get_models_count(self) -> int:
-        """Возвращает количество AI моделей в базе"""
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM ai_models")
-                return cursor.fetchone()[0]
-        except Exception as e:
-            logger.error(f"Ошибка получения количества моделей: {e}")
-            return 0

@@ -319,7 +319,6 @@ async def create_monday_post():
         post_text = f"📅 **Понедельник: Цели и блокеры недели**\n\n{analysis}"
 
         await bot.send_message(chat_id=CHANNEL_ID, text=post_text, parse_mode="Markdown")
-        logger.info(f"Понедельничный пост опубликован в канал {CHANNEL_ID}")
 
     except Exception as e:
         logger.error(f"Error creating Monday post: {e}")
@@ -367,7 +366,6 @@ async def create_friday_digest():
         post_text = f"📊 **Weekly Digest**\n\n{analysis}"
 
         await bot.send_message(chat_id=CHANNEL_ID, text=post_text, parse_mode="Markdown")
-        logger.info(f"Friday Digest опубликован в канал {CHANNEL_ID}")
 
         # Очищаем сообщения после публикации дайджеста
         for chat_id in chat_messages:

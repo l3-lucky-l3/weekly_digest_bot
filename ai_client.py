@@ -27,9 +27,6 @@ class AIClient:
         # Загружаем модели из базы данных
         self.models: Dict[str, str] = self.db.get_all_models()
 
-        if not self.models:
-            logger.warning("В базе данных нет AI моделей. Добавьте модели через команду /add_model")
-
     def analyze_chat_messages(self, messages: List[str]) -> str:
         """Анализирует сообщения из чата и возвращает суммаризацию"""
         if not self.models:
@@ -109,7 +106,6 @@ class AIClient:
         for current_model_key in models_to_try:
             try:
                 model = self.models[current_model_key]
-                logger.info(f"🔄 Пробуем модель: {current_model_key} -> {model}")
 
                 completion = self.client.chat.completions.create(
                     model=model,
@@ -117,12 +113,10 @@ class AIClient:
                     max_tokens=2000
                 )
 
-                logger.info(f"✅ Успешно использована модель: {current_model_key}")
                 return completion.choices[0].message.content
 
             except Exception as e:
                 last_error = e
-                logger.warning(f"❌ Модель {current_model_key} недоступна: {str(e)}")
                 continue
 
         # Если все модели недоступны
@@ -164,6 +158,5 @@ class AIClient:
         """Возвращает статистику"""
         return {
             "ai_models": len(self.models),
-            "monitored_chats": len(self.db.get_monitored_chats()),
-            "total_models": self.db.get_models_count()
+            "monitored_chats": len(self.db.get_monitored_chats())
         }

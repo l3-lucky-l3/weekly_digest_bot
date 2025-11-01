@@ -13,7 +13,7 @@ COPY requirements.txt .
 # Устанавливаем Python зависимости
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем исходный код
+# Копируем ВСЕ файлы проекта
 COPY . .
 
 # Создаем volume для базы данных
@@ -23,4 +23,4 @@ VOLUME /app/data
 RUN mkdir -p /app/data
 
 # Запускаем бота
-CMD ["python", "main.py"]
+CMD ["python", "src/main.py"]

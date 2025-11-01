@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import logging
 from typing import Dict, List
@@ -6,8 +7,22 @@ logger = logging.getLogger(__name__)
 
 
 class Database:
-    def __init__(self, db_path: str = "data/database.db"):
+    def __init__(self, db_path: str = None):
+        # Определяем путь автоматически
+        if db_path is None:
+            # Если запущено в Docker - используем /app/data
+            if os.path.exists("/app"):
+                db_path = "/app/data/database.db"
+            else:
+                # Если запущено локально - используем data в корне проекта
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                project_root = os.path.dirname(current_dir)  # Поднимаемся из src/
+                db_path = os.path.join(project_root, "data", "database.db")
+
         self.db_path = db_path
+        # Создаем директорию для данных если её нет
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        logger.info(f"Используется база данных: {self.db_path}")
         self._init_db()
 
     def _init_db(self):

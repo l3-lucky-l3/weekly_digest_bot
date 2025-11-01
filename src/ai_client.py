@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 class AIClient:
-    def __init__(self, db_path: str = "data/database.db"):
+    def __init__(self):
         self.api_key = os.getenv("OPENROUTER_API_KEY")
         if not self.api_key:
             raise ValueError("OPENROUTER_API_KEY не найден в .env файле")
@@ -22,7 +22,7 @@ class AIClient:
         )
 
         # Инициализация базы данных
-        self.db = Database(db_path)
+        self.db = Database()
 
         # Загружаем модели из базы данных
         self.models: Dict[str, str] = self.db.get_all_models()

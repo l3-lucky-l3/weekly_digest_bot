@@ -130,7 +130,7 @@ async def cmd_add_chat(message: Message):
             await message.answer("❌ Использование: /add_chat <id_чата>\nПример: /add_chat -100123456789")
             return
 
-        chat_id = args[0]
+        chat_id = int(args[0])
 
         if db.add_monitored_chat(chat_id):
             chat_messages[chat_id] = []
@@ -151,7 +151,7 @@ async def cmd_remove_chat(message: Message):
             await message.answer("❌ Использование: /remove_chat <id_чата>\nПример: /remove_chat -100123456789")
             return
 
-        chat_id = args[0]
+        chat_id = int(args[0])
 
         if db.remove_monitored_chat(chat_id):
             if chat_id in chat_messages:
@@ -186,8 +186,8 @@ async def cmd_add_model(message: Message):
     try:
         args = message.text.split()[1:]
         if len(args) < 2:
-            await message.answer(
-                "❌ Использование: /add_model <название> <модель>\nПример: /add_model deepseek deepseek/deepseek-chat:free")
+            await message.answer("❌ Использование: /add_model <название> <модель>\n"
+                                 "Пример: /add_model deepseek deepseek/deepseek-chat:free")
             return
 
         model_key = args[0]
@@ -274,6 +274,132 @@ async def process_chat_message(message: Message):
 
     except Exception as e:
         logger.error(f"Error handling monitored message: {e}")
+
+
+# TODO del
+# Обработчик команды /test_post
+@dp.message(Command("test_post"))
+async def cmd_test_post(message: Message):
+    """Тестовая команда для отправки примеров постов"""
+    try:
+        args = message.text.split()[1:]
+        post_type = args[0] if args else "monday"
+
+        if post_type == "monday":
+            await send_test_monday_post(message)
+        elif post_type == "friday":
+            await send_test_friday_digest(message)
+        else:
+            await message.answer(
+                "❌ Использование: /test_post <тип>\n"
+                "Типы:\n"
+                "• monday - тест понедельничного поста\n"
+                "• friday - тест пятничного дайджеста\n"
+                "Пример: /test_post monday"
+            )
+
+    except Exception as e:
+        logger.error(f"Error in test_post command: {e}")
+        await message.answer("❌ Ошибка при создании тестового поста")
+
+
+async def send_test_monday_post(message: Message):
+    """Отправляет тестовый понедельничный пост"""
+    try:
+        # Собираем текущие сообщения из чатов
+        all_messages = []
+        for chat_id, messages in chat_messages.items():
+            if messages:
+                all_messages.extend(messages[-10:])  # Берем последние 10 сообщений
+
+        if not all_messages:
+            all_messages = ["Тестовое сообщение 1", "Тестовое сообщение 2"]
+            logger.info("Используются тестовые сообщения для демонстрации")
+
+        prompt = f"""
+На основе сообщений из чатов сообщества за последние дни, предложи цели и возможные блокеры на текущую неделю.
+
+Сообщения из чатов:
+{"; ".join(all_messages)}
+
+Формат ответа:
+🎯 Цели недели:
+1. [цель 1]
+2. [цель 2]
+
+🛑 Возможные блокеры:
+• [блокер 1]
+• [блокер 2]
+
+💡 Рекомендации:
+- [рекомендация]
+
+Будь конкретным и ориентированным на действие.
+"""
+
+        analysis = ai_client.send_request(prompt)
+
+        post_text = f"📅 **Понедельник: Цели и блокеры недели**\n\n{analysis}"
+
+        await bot.send_message(chat_id=CHANNEL_ID, text="🔬 **ТЕСТОВЫЙ ПОСТ:**\n" + post_text, parse_mode="Markdown")
+        await message.answer(f"✅ Тестовый пост также отправлен в канал {CHANNEL_ID}")
+
+        logger.info("Тестовый понедельничный пост отправлен")
+
+    except Exception as e:
+        logger.error(f"Error sending test Monday post: {e}")
+        await message.answer("❌ Ошибка при создании тестового понедельничного поста")
+
+
+async def send_test_friday_digest(message: Message):
+    """Отправляет тестовый пятничный дайджест"""
+    try:
+        # Собираем текущие сообщения из чатов
+        all_messages = []
+        for chat_id, messages in chat_messages.items():
+            if messages:
+                all_messages.extend(messages)
+
+        if not all_messages:
+            all_messages = [
+                "Запустили новую фичу авторизации",
+                "Обсуждаем дизайн главной страницы",
+                "Проблемы с производительностью на мобильных устройствах",
+                "Ищем фронтенд разработчика в команду",
+                "Провели успешный деплой в продакшен"
+            ]
+            logger.info("Используются тестовые сообщения для демонстрации")
+
+        prompt = f"""
+Создай еженедельный дайджест на основе сообщений из чатов сообщества.
+
+Сообщения из чатов:
+{"; ".join(all_messages)}
+
+Структура дайджеста:
+👥 Новые участники
+💡 Идеи 
+🔬 Лаб (next/stop)
+🚀 Апдейты проектов
+🆘 Помощь 
+🛠 Инструмент недели
+✅ Решения
+
+Будь кратким, информативным и используй эмодзи для наглядности.
+"""
+
+        analysis = ai_client.send_request(prompt)
+
+        post_text = f"📊 **Weekly Digest**\n\n{analysis}"
+
+        await bot.send_message(chat_id=CHANNEL_ID, text="🔬 **ТЕСТОВЫЙ ДАЙДЖЕСТ:**\n" + post_text, parse_mode="Markdown")
+        await message.answer(f"✅ Тестовый дайджест отправлен в канал {CHANNEL_ID}")
+
+        logger.info("Тестовый пятничный дайджест отправлен")
+
+    except Exception as e:
+        logger.error(f"Error sending test Friday digest: {e}")
+        await message.answer("❌ Ошибка при создании тестового пятничного дайджеста")
 
 
 # Функция для создания понедельничного поста (цели/блокеры)

@@ -1,7 +1,7 @@
 import os
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, Filter
@@ -36,8 +36,8 @@ if not MAIN_CHAT_ID:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Временное хранилище сообщений из топиков
-topic_messages = {}
+# Константы
+MESSAGE_RETENTION_DAYS = 7  # Хранить сообщения 7 дней
 
 
 # Обработчик команды /start
@@ -68,6 +68,7 @@ async def cmd_start(message: Message):
 🔧 Утилиты:
 /get_chat_id - показать ID текущего чата/топика
 /test_post <тип> - тестовая отправка поста
+/cleanup_messages - очистить старые сообщения из БД
 
 💡 Команды управления топиками должны выполняться внутри нужного топика!
 """
@@ -183,16 +184,14 @@ async def cmd_add_topic(message: Message):
 
         topic_id = message.message_thread_id
 
-        args = message.text.split()[1:]
-        if args:
-            topic_name = args[0]
-        else:
+        # Получаем название топика из reply_to_message если есть
+        topic_name = "Без названия"
+        if (message.reply_to_message and
+                hasattr(message.reply_to_message, 'forum_topic_created') and
+                message.reply_to_message.forum_topic_created):
             topic_name = message.reply_to_message.forum_topic_created.name or "Без названия"
 
         if db.add_source_topic(topic_id, topic_name):
-            # Инициализируем хранилище для этого топика
-            topic_messages[topic_id] = []
-
             response = f"✅ Топик добавлен в источники:\nID: <code>{topic_id}</code>\nНазвание: {topic_name}"
             await message.answer(response, parse_mode="HTML")
         else:
@@ -218,9 +217,6 @@ async def cmd_delete_topic(message: Message):
         topic_id = message.message_thread_id
 
         if db.remove_source_topic(topic_id):
-            # Удаляем из временного хранилища
-            if topic_id in topic_messages:
-                del topic_messages[topic_id]
             await message.answer(f"✅ Топик удален из источников\nID: <code>{topic_id}</code>", parse_mode="HTML")
         else:
             await message.answer(f"❌ Топик не найден в источниках\nID: <code>{topic_id}</code>", parse_mode="HTML")
@@ -266,17 +262,18 @@ async def cmd_select_conductor_topic(message: Message):
 
         topic_id = message.message_thread_id
 
-        args = message.text.split()[1:]
-        if args:
-            topic_name = args[0]
-        else:
+        # Получаем название топика из reply_to_message если есть
+        topic_name = "Conductor"
+        if (message.reply_to_message and
+                hasattr(message.reply_to_message, 'forum_topic_created') and
+                message.reply_to_message.forum_topic_created):
             topic_name = message.reply_to_message.forum_topic_created.name or "Conductor"
 
         if db.set_system_topic("conductor", topic_id, topic_name):
             response = f"✅ Топик Conductor установлен:\nID: <code>{topic_id}</code>\nНазвание: {topic_name}"
             await message.answer(response, parse_mode="HTML")
         else:
-            await message.answer("❌ Ошибка при установке топика Conductor")
+            await message.answer("❌ Ошибка при установке топик Conductor")
 
     except Exception as e:
         logger.error(f"Error setting conductor topic: {e}")
@@ -297,10 +294,11 @@ async def cmd_select_announcements_topic(message: Message):
 
         topic_id = message.message_thread_id
 
-        args = message.text.split()[1:]
-        if args:
-            topic_name = args[0]
-        else:
+        # Получаем название топика из reply_to_message если есть
+        topic_name = "Анонсы"
+        if (message.reply_to_message and
+                hasattr(message.reply_to_message, 'forum_topic_created') and
+                message.reply_to_message.forum_topic_created):
             topic_name = message.reply_to_message.forum_topic_created.name or "Анонсы"
 
         if db.set_system_topic("announcements", topic_id, topic_name):
@@ -324,6 +322,10 @@ async def cmd_show_config(message: Message):
         # Получаем системные топики
         conductor_topic = db.get_system_topic("conductor")
         announcements_topic = db.get_system_topic("announcements")
+
+        # Получаем статистику сообщений из БД
+        recent_messages = db.get_messages_for_period(days=MESSAGE_RETENTION_DAYS)
+        total_messages = len(recent_messages)
 
         response = "⚙️ <b>Текущая конфигурация:</b>\n\n"
 
@@ -357,16 +359,26 @@ async def cmd_show_config(message: Message):
 
         response += f"\n💬 <b>Основной чат:</b> {MAIN_CHAT_ID or '❌ Не настроен'}"
 
-        # Статистика сообщений
-        total_messages = sum(len(messages) for messages in topic_messages.values())
-        response += f"\n\n📊 <b>Сообщений в памяти:</b> {total_messages}"
-        response += f"\n<b>Отслеживаемых топиков:</b> {len(topic_messages)}"
+        # Статистика сообщений из БД
+        response += f"\n\n📊 <b>Сообщений в БД (за {MESSAGE_RETENTION_DAYS} дней):</b> {total_messages}"
+        response += f"\n<b>Отслеживаемых топиков:</b> {len(source_topics)}"
 
         await message.answer(response, parse_mode="HTML")
 
     except Exception as e:
         logger.error(f"Error showing config: {e}")
         await message.answer("❌ Ошибка при получении конфигурации")
+
+
+@dp.message(Command("cleanup_messages"))
+async def cmd_cleanup_messages(message: Message):
+    """Очищает старые сообщения из БД"""
+    try:
+        deleted_count = db.cleanup_old_messages(days=MESSAGE_RETENTION_DAYS)
+        await message.answer(f"✅ Очистка БД выполнена. Удалено сообщений: {deleted_count}")
+    except Exception as e:
+        logger.error(f"Error cleaning up messages: {e}")
+        await message.answer("❌ Ошибка при очистке БД")
 
 
 # === КОМАНДЫ УПРАВЛЕНИЯ AI МОДЕЛЯМИ ===
@@ -451,26 +463,27 @@ async def cmd_test_post(message: Message):
 async def send_test_monday_post(message: Message):
     """Отправляет тестовый понедельничный пост"""
     try:
-        # Собираем текущие сообщения из топиков
-        all_messages = []
-        for topic_id, messages in topic_messages.items():
-            if messages:
-                all_messages.extend(messages[-10:])  # Берем последние 10 сообщений
+        # Получаем сообщения из БД за последнюю неделю
+        recent_messages = db.get_messages_for_period(days=MESSAGE_RETENTION_DAYS)
 
-        if not all_messages:
-            all_messages = [
+        if not recent_messages:
+            # Если нет сообщений в БД, используем тестовые
+            test_messages = [
                 "Нужно доработать авторизацию в проекте",
                 "Проблемы с производительностью на мобильных устройствах",
                 "Ищем фронтенд разработчика в команду",
                 "Обсуждаем дизайн главной страницы"
             ]
+            message_texts = test_messages
             logger.info("Используются тестовые сообщения для демонстрации")
+        else:
+            message_texts = [msg['message_text'] for msg in recent_messages if msg['message_text']]
 
         prompt = f"""
 На основе сообщений из топиков сообщества за последние дни, предложи цели и возможные блокеры на текущую неделю.
 
 Сообщения из топиков:
-{"; ".join(all_messages)}
+{"; ".join(message_texts)}
 
 Формат ответа:
 🎯 Цели недели:
@@ -518,27 +531,28 @@ async def send_test_monday_post(message: Message):
 async def send_test_friday_digest(message: Message):
     """Отправляет тестовый пятничный дайджест"""
     try:
-        # Собираем текущие сообщения из топиков
-        all_messages = []
-        for topic_id, messages in topic_messages.items():
-            if messages:
-                all_messages.extend(messages)
+        # Получаем сообщения из БД за последнюю неделю
+        recent_messages = db.get_messages_for_period(days=MESSAGE_RETENTION_DAYS)
 
-        if not all_messages:
-            all_messages = [
+        if not recent_messages:
+            # Если нет сообщений в БД, используем тестовые
+            test_messages = [
                 "Запустили новую фичу авторизации",
                 "Обсуждаем дизайн главной страницы",
                 "Проблемы с производительностью на мобильных устройствах",
                 "Ищем фронтенд разработчика в команду",
                 "Провели успешный деплой в продакшен"
             ]
+            message_texts = test_messages
             logger.info("Используются тестовые сообщения для демонстрации")
+        else:
+            message_texts = [msg['message_text'] for msg in recent_messages if msg['message_text']]
 
         prompt = f"""
 Создай еженедельный дайджест на основе сообщений из топиков сообщества.
 
 Сообщения из топиков:
-{"; ".join(all_messages)}
+{"; ".join(message_texts)}
 
 Структура дайджеста:
 👥 Новые участники
@@ -608,34 +622,25 @@ async def handle_source_topic_messages(message: Message):
 
 
 async def process_topic_message(message: Message):
-    """Обрабатывает и сохраняет сообщение из топика"""
+    """Обрабатывает и сохраняет сообщение из топика в БД"""
     try:
         topic_id = message.message_thread_id
 
-        if topic_id not in topic_messages:
-            topic_messages[topic_id] = []
-
-        # Сохраняем текст сообщения
+        # Сохраняем только текстовые сообщения без команд
         if message.text and not message.text.startswith('/'):
-            topic_messages[topic_id].append(message.text)
-
-            # Также сохраняем в базу данных
             message_data = {
                 'message_id': message.message_id,
-                'chat_id': message.chat.id,
                 'topic_id': topic_id,
                 'message_text': message.text,
-                'thread_id': None,  # Будет установлено при классификации
-                'parent_message_id': message.reply_to_message.message_id if message.reply_to_message else None,
-                'classification_id': None  # Будет установлено при классификации
+                'thread_id': None,
+                'parent_message_id': message.reply_to_message.message_id if message.reply_to_message and message.reply_to_message.message_id != topic_id else None,
+                'classification_id': None
             }
-            db.save_message(message_data)
 
-            # Ограничиваем количество сообщений в памяти
-            if len(topic_messages[topic_id]) > 100:
-                topic_messages[topic_id] = topic_messages[topic_id][-50:]
-
-            logger.debug(f"Сообщение сохранено для топика {topic_id}: {message.text[:50]}...")
+            if db.save_message(message_data):
+                logger.debug(f"Сообщение сохранено в БД для топика {topic_id}: {message.text[:50]}...")
+            else:
+                logger.error(f"Ошибка сохранения сообщения в БД для топика {topic_id}")
 
     except Exception as e:
         logger.error(f"Error processing topic message: {e}")
@@ -651,20 +656,20 @@ async def create_monday_post():
             logger.error("Топик Conductor не настроен")
             return
 
-        all_messages = []
-        for topic_id, messages in topic_messages.items():
-            if messages:
-                all_messages.extend(messages[-20:])  # Берем последние 20 сообщений
+        # Получаем сообщения из БД за последнюю неделю
+        recent_messages = db.get_messages_for_period(days=MESSAGE_RETENTION_DAYS)
 
-        if not all_messages:
-            logger.info("Нет сообщений для анализа по понедельникам")
+        if not recent_messages:
+            logger.info("Нет сообщений в БД для анализа по понедельникам")
             return
+
+        message_texts = [msg['message_text'] for msg in recent_messages if msg['message_text']]
 
         prompt = f"""
 На основе сообщений из топиков сообщества за последние дни, предложи цели и возможные блокеры на текущую неделю.
 
 Сообщения из топиков:
-{"; ".join(all_messages)}
+{"; ".join(message_texts[:50])}
 
 Формат ответа:
 🎯 Цели недели:
@@ -705,20 +710,20 @@ async def create_friday_digest():
             logger.error("Топик Анонсы не настроен")
             return
 
-        all_messages = []
-        for topic_id, messages in topic_messages.items():
-            if messages:
-                all_messages.extend(messages)
+        # Получаем сообщения из БД за последнюю неделю
+        recent_messages = db.get_messages_for_period(days=MESSAGE_RETENTION_DAYS)
 
-        if not all_messages:
-            logger.info("Нет сообщений для Friday Digest")
+        if not recent_messages:
+            logger.info("Нет сообщений в БД для Friday Digest")
             return
+
+        message_texts = [msg['message_text'] for msg in recent_messages if msg['message_text']]
 
         prompt = f"""
 Создай еженедельный дайджест на основе сообщений из топиков сообщества.
 
 Сообщения из топиков:
-{"; ".join(all_messages)}
+{"; ".join(message_texts[:50])}
 
 Структура дайджеста:
 👥 Новые участники
@@ -741,10 +746,6 @@ async def create_friday_digest():
             text=post_text,
             parse_mode="Markdown"
         )
-
-        # Очищаем сообщения после публикации дайджеста
-        for topic_id in topic_messages:
-            topic_messages[topic_id] = []
 
         logger.info("Пятничный дайджест опубликован")
 
@@ -772,6 +773,13 @@ async def scheduled_posting():
                 await create_friday_digest()
                 await asyncio.sleep(60)
 
+            # Ежедневная очистка старых сообщений в 03:00
+            elif current_time == "03:00":
+                deleted_count = db.cleanup_old_messages(days=MESSAGE_RETENTION_DAYS)
+                if deleted_count > 0:
+                    logger.info(f"Автоочистка БД: удалено {deleted_count} старых сообщений")
+                await asyncio.sleep(60)
+
             await asyncio.sleep(30)  # Проверяем каждые 30 секунд
 
         except Exception as e:
@@ -784,19 +792,17 @@ async def scheduled_posting():
 async def main():
     logger.info("🚀 Weekly-дайджест бот запускается...")
 
-    # Загружаем топики-источники в память
-    source_topics = db.get_source_topics()
-    for topic in source_topics:
-        topic_messages[topic['topic_id']] = []
-
     # Показываем конфигурацию при запуске
+    source_topics = db.get_source_topics()
     conductor_topic = db.get_system_topic("conductor")
     announcements_topic = db.get_system_topic("announcements")
+    recent_messages = db.get_messages_for_period(days=MESSAGE_RETENTION_DAYS)
 
     logger.info(f"Основной чат: {MAIN_CHAT_ID}")
     logger.info(f"Топиков-источников: {len(source_topics)}")
     logger.info(f"Топик Conductor: {conductor_topic['topic_id'] if conductor_topic else 'Не настроен'}")
     logger.info(f"Топик Анонсы: {announcements_topic['topic_id'] if announcements_topic else 'Не настроен'}")
+    logger.info(f"Сообщений в БД за {MESSAGE_RETENTION_DAYS} дней: {len(recent_messages)}")
 
     stats = ai_client.get_stats()
     logger.info(f"AI моделей: {stats['ai_models']}")

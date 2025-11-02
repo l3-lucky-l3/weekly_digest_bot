@@ -2,6 +2,7 @@ import os
 import sqlite3
 import logging
 from typing import Dict, List, Optional
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,6 @@ class Database:
                     CREATE TABLE IF NOT EXISTS chat_messages (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         message_id INTEGER NOT NULL,
-                        chat_id BIGINT NOT NULL,
                         topic_id INTEGER,
                         thread_id INTEGER,
                         parent_message_id INTEGER,
@@ -71,7 +71,7 @@ class Database:
                         message_text TEXT NOT NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         processed BOOLEAN DEFAULT FALSE,
-                        UNIQUE(message_id, chat_id)
+                        UNIQUE(message_id)
                     )
                 ''')
 
@@ -191,11 +191,10 @@ class Database:
                 cursor = conn.cursor()
                 cursor.execute('''
                     INSERT OR REPLACE INTO chat_messages 
-                    (message_id, chat_id, topic_id, thread_id, parent_message_id, classification_id, message_text)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (message_id, topic_id, thread_id, parent_message_id, classification_id, message_text)
+                    VALUES (?, ?, ?, ?, ?, ?)
                 ''', (
                     message_data.get('message_id'),
-                    message_data.get('chat_id'),
                     message_data.get('topic_id'),
                     message_data.get('thread_id'),
                     message_data.get('parent_message_id'),
@@ -243,6 +242,27 @@ class Database:
         except Exception as e:
             logger.error(f"Ошибка получения сообщений треда: {e}")
             return []
+
+    def cleanup_old_messages(self, days: int = 7) -> int:
+        """Удаляет сообщения старше указанного количества дней"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    DELETE FROM chat_messages 
+                    WHERE created_at < datetime('now', ?)
+                ''', (f'-{days} days',))
+
+                deleted_count = cursor.rowcount
+                conn.commit()
+
+                if deleted_count > 0:
+                    logger.info(f"Удалено старых сообщений: {deleted_count}")
+
+                return deleted_count
+        except Exception as e:
+            logger.error(f"Ошибка очистки старых сообщений: {e}")
+            return 0
 
     # === МЕТОДЫ ДЛЯ ТРЕДОВ ===
 

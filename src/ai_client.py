@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 from dotenv import load_dotenv
 from openai import OpenAI
 from typing import Dict, List
@@ -37,8 +38,27 @@ class AIClient:
             logger.error(f"Ошибка загрузки промпта {prompt_name}: {e}")
             return f"Промпт {prompt_name} не найден"
 
-    def send_request(self, message: str, model_key: str = None) -> str:
+    async def send_request_with_retry(self, message: str, model_key: str = None, max_retries: int = 3) -> str:
+        """Отправляет запрос с повторными попытками"""
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                return await self.send_request(message, model_key)
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Попытка {attempt + 1}/{max_retries} не удалась: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)  # Экспоненциальная задержка
+
+        # После всех неудачных попыток
+        error_msg = f"Все {max_retries} попыток не удались. Последняя ошибка: {str(last_error)}"
+        logger.error(error_msg)
+        raise Exception(error_msg)
+
+    async def send_request(self, message: str, model_key: str = None) -> str:
         """Отправляет запрос к AI с автоматическим переключением моделей при ошибках"""
+        logger.info(f"Отправка запроса к LLM. Длина: {len(message)} символов")
+
         if not self.models:
             raise Exception("Нет доступных AI моделей")
 
@@ -60,7 +80,9 @@ class AIClient:
                     max_tokens=2000
                 )
 
-                return completion.choices[0].message.content
+                response = completion.choices[0].message.content
+                logger.info(f"Получен ответ от LLM. Длина: {len(response)} символов")
+                return response
 
             except Exception as e:
                 last_error = e
@@ -73,7 +95,7 @@ class AIClient:
 
     # === Базовые AI-схемы ===
 
-    def classify_message_schema_b(self, message: str, active_threads: List[Dict] = None) -> Dict:
+    async def classify_message_schema_b(self, message: str, active_threads: List[Dict] = None) -> Dict:
         """
         Схема Б: Классификация нового сообщения
         Определяет, является ли сообщение 'goal' или 'blocker'
@@ -83,7 +105,7 @@ class AIClient:
     Проанализируй сообщение и определи его тип.
 
     ОПРЕДЕЛЕНИЯ:
-    "Цель" - это новая идея, проект, исследование или задача, которую необходимо выполнить или проработать в рамках комьюнити. 
+    "Цель" - это новая идее, проект, исследование или задача, которую необходимо выполнить или проработать в рамках комьюнити. 
     Это высокоуровневое, широкое и долгосрочное описание желаемого результата.
 
     "Блокер" - это любое событие, проблема или обстоятельство, которое мешает или делает невозможным 
@@ -92,6 +114,7 @@ class AIClient:
     РУКОВОДСТВА:
     - p3 express: приоритизация по принципу "самое важное сейчас"
     - p5 express: фокус на практической реализации
+    - Руководства: https://omimo.org/ru/
 
     Верни ответ в формате JSON:
     {
@@ -109,13 +132,13 @@ class AIClient:
     """
 
         try:
-            response = self.send_request_with_json(system_prompt + user_prompt)
+            response = await self.send_request_with_json(system_prompt + user_prompt)
             return self._parse_classification_response(response)
         except Exception as e:
             logger.error(f"Ошибка классификации сообщения: {e}")
             return {"classification": "other", "confidence": 0, "reason": str(e), "title": None}
 
-    def semantic_sling_schema_c(self, message: str, active_threads: List[Dict]) -> Dict:
+    async def semantic_sling_schema_c(self, message: str, active_threads: List[Dict]) -> Dict:
         """
         Схема В: Семантический слинг
         Проверяет привязку сообщения к существующим тредам
@@ -125,12 +148,13 @@ class AIClient:
     Определи, относится ли новое сообщение по смыслу к одному из существующих тредов.
 
     ОПРЕДЕЛЕНИЯ:
-    "Цель" - новая идея, проект, исследование или задача.
+    "Цель" - новая идее, проект, исследование или задача.
     "Блокер" - проблема или обстоятельство, мешающее работе.
 
     РУКОВОДСТВА:
     - p3 express: приоритизация по принципу "самое важное сейчас"
     - p5 express: фокус на практической реализации
+    - Руководства: https://omimo.org/ru/
 
     Верни ответ в формате JSON:
     {
@@ -159,13 +183,13 @@ class AIClient:
     """
 
         try:
-            response = self.send_request_with_json(system_prompt + user_prompt)
+            response = await self.send_request_with_json(system_prompt + user_prompt)
             return self._parse_sling_response(response)
         except Exception as e:
             logger.error(f"Ошибка семантического слинга: {e}")
             return {"related": False, "thread_id": None, "confidence": 0, "reason": str(e)}
 
-    def summarize_for_monday_schema_a(self, threads_data: List[Dict]) -> str:
+    async def summarize_for_monday_schema_a(self, threads_data: List[Dict]) -> str:
         """
         Схема А: Суммаризация для понедельничного поста (цели/блокеры)
         """
@@ -174,12 +198,13 @@ class AIClient:
     На основе обсуждений за неделю создай предложения целей и блокеров на следующую неделю.
 
     ОПРЕДЕЛЕНИЯ:
-    "Цель" - новая идея, проект, исследование или задача для выполнения.
+    "Цель" - новая идее, проект, исследование или задача для выполнения.
     "Блокер" - проблема или обстоятельство, мешающее работе.
 
     РУКОВОДСТВА:
     - p3 express: приоритизация по принципу "самое важное сейчас"  
     - p5 express: фокус на практической реализации
+    - Руководства: https://omimo.org/ru/
     - Будь конкретным и ориентированным на действие
     - Используй маркдаун для форматирования
 
@@ -214,17 +239,19 @@ class AIClient:
     """
 
         try:
-            return self.send_request(system_prompt + user_prompt)
+            return await self.send_request_with_retry(system_prompt + user_prompt)
         except Exception as e:
             logger.error(f"Ошибка суммаризации для понедельника: {e}")
             return "❌ Не удалось создать суммаризацию для понедельничного поста"
 
     # === Вспомогательные методы ===
 
-    def send_request_with_json(self, prompt: str, model_key: str = None) -> str:
+    async def send_request_with_json(self, prompt: str, model_key: str = None) -> str:
         """Отправляет запрос с ожиданием JSON ответа"""
-        response = self.send_request(prompt + "\n\nВерни ответ ТОЛЬКО в формате JSON, без дополнительного текста.",
-                                     model_key)
+        response = await self.send_request_with_retry(
+            prompt + "\n\nВерни ответ ТОЛЬКО в формате JSON, без дополнительного текста.",
+            model_key
+        )
         return response
 
     def _parse_classification_response(self, response: str) -> Dict:

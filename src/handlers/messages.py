@@ -54,7 +54,7 @@ async def send_test_monday_post(message: Message, bot, db, ai_client, main_chat_
         prompt = ai_client.load_prompt("monday")
         prompt += f"\n\nСообщения из топиков:\n{'; '.join(message_texts)}"
 
-        analysis = ai_client.send_request(prompt)
+        analysis = await ai_client.send_request_with_retry(prompt)
 
         post_text = f"📅 **Понедельник: Цели и блокеры недели**\n\n{analysis}"
 
@@ -106,7 +106,7 @@ async def send_test_friday_digest(message: Message, bot, db, ai_client, main_cha
         prompt = ai_client.load_prompt("friday")
         prompt += f"\n\nСообщения из топиков:\n{'; '.join(message_texts)}"
 
-        analysis = ai_client.send_request(prompt)
+        analysis = await ai_client.send_request_with_retry(prompt)
 
         post_text = f"📊 **Weekly Digest**\n\n{analysis}"
 

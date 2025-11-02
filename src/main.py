@@ -120,7 +120,7 @@ async def three_step_classification(message_data, active_threads, db, ai_client)
                 return
 
         # Шаг 2: Семантический слинг
-        sling_result = ai_client.semantic_sling_schema_c(message_text, active_threads)
+        sling_result = await ai_client.semantic_sling_schema_c(message_text, active_threads)
         if sling_result['related'] and sling_result['thread_id']:
             thread = db.get_thread_by_id(sling_result['thread_id'])
             if thread:
@@ -130,7 +130,7 @@ async def three_step_classification(message_data, active_threads, db, ai_client)
                 return
 
         # Шаг 3: Классификация новой сущности
-        classification_result = ai_client.classify_message_schema_b(message_text)
+        classification_result = await ai_client.classify_message_schema_b(message_text)
         if classification_result['classification'] in ['goal', 'blocker']:
             thread_id = db.create_thread(
                 classification_result['title'] or message_text[:50],
@@ -168,7 +168,7 @@ async def create_monday_post(bot, db, ai_client, main_chat_id):
             return
 
         # Используем схему А для суммаризации
-        post_text = ai_client.summarize_for_monday_schema_a(active_threads)
+        post_text = await ai_client.summarize_for_monday_schema_a(active_threads)
 
         full_post = f"📅 **Понедельник: Цели и блокеры недели**\n\n{post_text}"
 
@@ -206,7 +206,7 @@ async def create_friday_digest(bot, db, ai_client, main_chat_id):
         prompt = ai_client.load_prompt("friday")
         prompt += f"\n\nСообщения из топиков:\n{'; '.join(message_texts[:50])}"
 
-        analysis = ai_client.send_request(prompt)
+        analysis = await ai_client.send_request(prompt)
         post_text = f"📊 **Weekly Digest**\n\n{analysis}"
 
         await bot.send_message(

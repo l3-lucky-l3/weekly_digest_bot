@@ -2,7 +2,6 @@ import os
 import sqlite3
 import logging
 from typing import Dict, List, Optional
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +140,7 @@ class Database:
             logger.error(f"Ошибка получения топиков-источников: {e}")
             return []
 
-    # === МЕТОДЫ ДЛЯ СИСТЕМНЫХ ТОПИКОВ ===
+    # === Методы для системных топиков ===
 
     def set_system_topic(self, topic_type: str, topic_id: int, topic_name: str = None) -> bool:
         """Устанавливает системный топик (Conductor или Announcements)"""
@@ -182,7 +181,7 @@ class Database:
             logger.error(f"Ошибка получения системного топика: {e}")
             return None
 
-    # === МЕТОДЫ ДЛЯ СООБЩЕНИЙ ===
+    # === Методы для сообщений ===
 
     def save_message(self, message_data: Dict) -> bool:
         """Сохраняет сообщение в базу"""
@@ -264,7 +263,7 @@ class Database:
             logger.error(f"Ошибка очистки старых сообщений: {e}")
             return 0
 
-    # === МЕТОДЫ ДЛЯ ТРЕДОВ ===
+    # === Методы для тредов ===
 
     def create_thread(self, title: str, classification_id: str) -> int:
         """Создает новый тред и возвращает его ID"""
@@ -301,7 +300,123 @@ class Database:
             logger.error(f"Ошибка получения активных тредов: {e}")
             return []
 
-    # Методы для работы с AI моделями
+    # === Методы для тредов и классификации ===
+
+    def get_thread_by_id(self, thread_id: int) -> Optional[Dict]:
+        """Получает тред по ID"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT * FROM message_threads WHERE thread_id = ?
+                ''', (thread_id,))
+                row = cursor.fetchone()
+                if row:
+                    columns = [description[0] for description in cursor.description]
+                    return dict(zip(columns, row))
+                return None
+        except Exception as e:
+            logger.error(f"Ошибка получения треда: {e}")
+            return None
+
+    def update_message_thread(self, message_id: int, thread_id: int, classification_id: str = None) -> bool:
+        """Обновляет тред и классификацию для сообщения"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                if classification_id:
+                    cursor.execute('''
+                        UPDATE chat_messages 
+                        SET thread_id = ?, classification_id = ?, processed = TRUE
+                        WHERE message_id = ?
+                    ''', (thread_id, classification_id, message_id))
+                else:
+                    cursor.execute('''
+                        UPDATE chat_messages 
+                        SET thread_id = ?, processed = TRUE
+                        WHERE message_id = ?
+                    ''', (thread_id, message_id))
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Ошибка обновления треда сообщения: {e}")
+            return False
+
+    def get_unprocessed_messages(self) -> List[Dict]:
+        """Получает необработанные сообщения"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT * FROM chat_messages 
+                    WHERE processed = FALSE 
+                    ORDER BY created_at ASC
+                ''')
+                rows = cursor.fetchall()
+                columns = [description[0] for description in cursor.description]
+                return [dict(zip(columns, row)) for row in rows]
+        except Exception as e:
+            logger.error(f"Ошибка получения необработанных сообщений: {e}")
+            return []
+
+    def get_active_threads_with_messages(self, days: int = 7) -> List[Dict]:
+        """Получает активные треды с сообщениями за период"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT 
+                        mt.thread_id,
+                        mt.title,
+                        mt.classification_id,
+                        mt.created_at,
+                        COUNT(cm.id) as message_count,
+                        GROUP_CONCAT(cm.message_text, ' ||| ') as messages
+                    FROM message_threads mt
+                    LEFT JOIN chat_messages cm ON mt.thread_id = cm.thread_id 
+                        AND cm.created_at >= datetime('now', ?)
+                    WHERE mt.is_active = TRUE
+                    GROUP BY mt.thread_id
+                    ORDER BY mt.created_at DESC
+                ''', (f'-{days} days',))
+
+                rows = cursor.fetchall()
+                result = []
+                for row in rows:
+                    thread_data = {
+                        'thread_id': row[0],
+                        'title': row[1],
+                        'classification_id': row[2],
+                        'created_at': row[3],
+                        'message_count': row[4],
+                        'messages': row[5].split(' ||| ') if row[5] else []
+                    }
+                    result.append(thread_data)
+                return result
+        except Exception as e:
+            logger.error(f"Ошибка получения тредов с сообщениями: {e}")
+            return []
+
+    def get_message_thread_by_parent(self, parent_message_id: int) -> Optional[Dict]:
+        """Получает тред по parent_message_id"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT thread_id, classification_id 
+                    FROM chat_messages 
+                    WHERE message_id = ? AND thread_id IS NOT NULL
+                ''', (parent_message_id,))
+                row = cursor.fetchone()
+                if row:
+                    return {'thread_id': row[0], 'classification_id': row[1]}
+                return None
+        except Exception as e:
+            logger.error(f"Ошибка получения треда по родителю: {e}")
+            return None
+
+    # === Методы для работы с AI моделями ===
+
     def get_all_models(self) -> Dict[str, str]:
         """Получает все AI модели из базы данных"""
         try:

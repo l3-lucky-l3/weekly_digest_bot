@@ -1,11 +1,12 @@
 import os
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, Filter
 from aiogram.types import Message
+from typing import Dict, List
 from ai_client import AIClient
 from db import Database
 
@@ -646,8 +647,109 @@ async def process_topic_message(message: Message):
         logger.error(f"Error processing topic message: {e}")
 
 
-# === ФУНКЦИИ ДЛЯ АВТОМАТИЧЕСКОГО ПОСТИНГА ===
+# === ТРЕХСТУПЕНЧАТАЯ КЛАССИФИКАЦИЯ ===
 
+async def process_unprocessed_messages():
+    """Обрабатывает необработанные сообщения трехступенчатым методом"""
+    try:
+        unprocessed_messages = db.get_unprocessed_messages()
+        if not unprocessed_messages:
+            return
+
+        active_threads = db.get_active_threads_with_messages(days=7)
+
+        for message in unprocessed_messages:
+            await three_step_classification(message, active_threads)
+
+    except Exception as e:
+        logger.error(f"Ошибка обработки необработанных сообщений: {e}")
+
+
+async def three_step_classification(message_data: Dict, active_threads: List[Dict]):
+    """Трехступенчатый процесс классификации сообщения"""
+    try:
+        message_id = message_data['message_id']
+        message_text = message_data['message_text']
+
+        # Шаг 1: Проверка ответа/реплая
+        if message_data['parent_message_id']:
+            parent_thread = db.get_message_thread_by_parent(message_data['parent_message_id'])
+            if parent_thread:
+                db.update_message_thread(message_id, parent_thread['thread_id'], parent_thread['classification_id'])
+                logger.info(f"Сообщение {message_id} привязано к треду {parent_thread['thread_id']} (наследование)")
+                return
+
+        # Шаг 2: Семантический слинг
+        sling_result = ai_client.semantic_sling_schema_c(message_text, active_threads)
+        if sling_result['related'] and sling_result['thread_id']:
+            thread = db.get_thread_by_id(sling_result['thread_id'])
+            if thread:
+                db.update_message_thread(message_id, sling_result['thread_id'], thread['classification_id'])
+                logger.info(
+                    f"Сообщение {message_id} привязано к треду {sling_result['thread_id']} (семантический слинг)")
+                return
+
+        # Шаг 3: Классификация новой сущности
+        classification_result = ai_client.classify_message_schema_b(message_text)
+        if classification_result['classification'] in ['goal', 'blocker']:
+            thread_id = db.create_thread(
+                classification_result['title'] or message_text[:50],
+                classification_result['classification']
+            )
+            if thread_id > 0:
+                db.update_message_thread(message_id, thread_id, classification_result['classification'])
+                logger.info(
+                    f"Создан новый тред {thread_id} для сообщения {message_id} ({classification_result['classification']})")
+            else:
+                logger.error(f"Ошибка создания треда для сообщения {message_id}")
+        else:
+            # Помечаем как обработанное даже если не классифицировано
+            db.update_message_thread(message_id, None, 'other')
+            logger.info(f"Сообщение {message_id} помечено как 'other'")
+
+    except Exception as e:
+        logger.error(f"Ошибка трехступенчатой классификации для сообщения {message_data['message_id']}: {e}")
+
+
+# Добавляем в scheduled_posting периодическую обработку
+async def scheduled_posting():
+    """Запускает периодическую проверку времени для постинга и обработки"""
+    while True:
+        try:
+            now = datetime.now()
+            current_time = now.strftime("%H:%M")
+            weekday = now.strftime("%A")
+
+            # Каждые 5 минут обрабатываем необработанные сообщения
+            if current_time.endswith(
+                    (':00', ':05', ':10', ':15', ':20', ':25', ':30', ':35', ':40', ':45', ':50', ':55')):
+                await process_unprocessed_messages()
+
+            # Понедельник 10:00 - цели/блокеры
+            if weekday == "Monday" and current_time == "10:00":
+                await create_monday_post()
+                await asyncio.sleep(60)
+
+            # Пятница 19:00 - Weekly Digest
+            elif weekday == "Friday" and current_time == "19:00":
+                await create_friday_digest()
+                await asyncio.sleep(60)
+
+            # Ежедневная очистка в 03:00
+            elif current_time == "03:00":
+                deleted_count = db.cleanup_old_messages(days=MESSAGE_RETENTION_DAYS)
+                if deleted_count > 0:
+                    logger.info(f"Автоочистка БД: удалено {deleted_count} старых сообщений")
+                await asyncio.sleep(60)
+
+            await asyncio.sleep(30)
+
+        except Exception as e:
+            logger.error(f"Error in scheduled posting: {e}")
+            await asyncio.sleep(60)
+
+
+# Обновляем create_monday_post для использования схемы А
 async def create_monday_post():
     """Создает пост с целями/блокерами на неделю (Пн 10:00)"""
     try:
@@ -656,47 +758,26 @@ async def create_monday_post():
             logger.error("Топик Conductor не настроен")
             return
 
-        # Получаем сообщения из БД за последнюю неделю
-        recent_messages = db.get_messages_for_period(days=MESSAGE_RETENTION_DAYS)
+        # Получаем активные треды за последнюю неделю
+        active_threads = db.get_active_threads_with_messages(days=7)
 
-        if not recent_messages:
-            logger.info("Нет сообщений в БД для анализа по понедельникам")
+        if not active_threads:
+            logger.info("Нет активных тредов для понедельничного поста")
             return
 
-        message_texts = [msg['message_text'] for msg in recent_messages if msg['message_text']]
+        # Используем схему А для суммаризации
+        post_text = ai_client.summarize_for_monday_schema_a(active_threads)
 
-        prompt = f"""
-На основе сообщений из топиков сообщества за последние дни, предложи цели и возможные блокеры на текущую неделю.
-
-Сообщения из топиков:
-{"; ".join(message_texts[:50])}
-
-Формат ответа:
-🎯 Цели недели:
-1. [цель 1]
-2. [цель 2]
-
-🛑 Возможные блокеры:
-• [блокер 1]
-• [блокер 2]
-
-💡 Рекомендации:
-- [рекомендация]
-
-Будь конкретным и ориентированным на действие.
-"""
-
-        analysis = ai_client.send_request(prompt)
-        post_text = f"📅 **Понедельник: Цели и блокеры недели**\n\n{analysis}"
+        full_post = f"📅 **Понедельник: Цели и блокеры недели**\n\n{post_text}"
 
         await bot.send_message(
             chat_id=MAIN_CHAT_ID,
             message_thread_id=conductor_topic['topic_id'],
-            text=post_text,
+            text=full_post,
             parse_mode="Markdown"
         )
 
-        logger.info("Понедельничный пост опубликован")
+        logger.info("Понедельничный пост опубликован (схема А)")
 
     except Exception as e:
         logger.error(f"Error creating Monday post: {e}")
@@ -751,41 +832,6 @@ async def create_friday_digest():
 
     except Exception as e:
         logger.error(f"Error creating Friday digest: {e}")
-
-
-# === ПЛАНИРОВЩИК ===
-
-async def scheduled_posting():
-    """Запускает периодическую проверку времени для постинга"""
-    while True:
-        try:
-            now = datetime.now()
-            current_time = now.strftime("%H:%M")
-            weekday = now.strftime("%A")
-
-            # Понедельник 10:00 - цели/блокеры
-            if weekday == "Monday" and current_time == "10:00":
-                await create_monday_post()
-                await asyncio.sleep(60)  # Ждем минуту чтобы не запустить дважды
-
-            # Пятница 19:00 - Weekly Digest
-            elif weekday == "Friday" and current_time == "19:00":
-                await create_friday_digest()
-                await asyncio.sleep(60)
-
-            # Ежедневная очистка старых сообщений в 03:00
-            elif current_time == "03:00":
-                deleted_count = db.cleanup_old_messages(days=MESSAGE_RETENTION_DAYS)
-                if deleted_count > 0:
-                    logger.info(f"Автоочистка БД: удалено {deleted_count} старых сообщений")
-                await asyncio.sleep(60)
-
-            await asyncio.sleep(30)  # Проверяем каждые 30 секунд
-
-        except Exception as e:
-            logger.error(f"Error in scheduled posting: {e}")
-            await asyncio.sleep(60)
-
 
 # === ЗАПУСК БОТА ===
 

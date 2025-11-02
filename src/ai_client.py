@@ -158,5 +158,4 @@ class AIClient:
         """Возвращает статистику"""
         return {
             "ai_models": len(self.models),
-            "monitored_chats": len(self.db.get_monitored_chats())
         }

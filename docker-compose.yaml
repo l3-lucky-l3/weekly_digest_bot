@@ -4,7 +4,7 @@ services:
     container_name: telegram-monitoring-bot
     restart: unless-stopped
     volumes:
-      - ./data:/app/data
+      - bot_data:/app/data
       - ./.env:/app/.env:ro
     environment:
       - PYTHONUNBUFFERED=1
@@ -13,3 +13,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  bot_data:

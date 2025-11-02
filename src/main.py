@@ -3,13 +3,18 @@ import asyncio
 import logging
 from datetime import datetime
 from dotenv import load_dotenv
-from aiogram import Bot, Dispatcher, F
-from aiogram.filters import Command, Filter
-from aiogram.types import Message
-from typing import Dict, List
-from ai_client import AIClient
-from db import Database
 
+from aiogram import Bot, Dispatcher
+
+from db import Database
+from ai_client import AIClient
+from handlers.commands import register_command_handlers
+from handlers.topics import register_topic_handlers
+from handlers.messages import register_message_handlers
+from utils.filters import SourceTopicsFilter
+
+
+# === КОНФИГУРАЦИЯ ===
 load_dotenv()
 
 # Настройка логирования
@@ -19,610 +24,46 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Инициализация клиентов
-ai_client = AIClient()
-db = Database()
-
-# Токены из .env
+# Константы
+MESSAGE_RETENTION_DAYS = 7
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-MAIN_CHAT_ID = os.getenv("MAIN_CHAT_ID")  # Основная супергруппа
+MAIN_CHAT_ID = os.getenv("MAIN_CHAT_ID")
 
+# Проверка обязательных переменных
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не установлен в .env файле")
 
 if not MAIN_CHAT_ID:
     logger.warning("MAIN_CHAT_ID не установлен в .env файле")
 
-# Инициализация бота и диспетчера
+# Инициализация компонентов
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-
-# Константы
-MESSAGE_RETENTION_DAYS = 7  # Хранить сообщения 7 дней
-
-
-# Обработчик команды /start
-@dp.message(Command("start"))
-async def cmd_start(message: Message):
-    welcome_text = """
-🚀 Weekly-дайджест бот
-
-Мониторинг топиков сообщества и создание еженедельных дайджестов.
-
-📅 Расписание:
-• Пн 10:00 - цели/блокеры недели (в топик Conductor)
-• Пт 19:00 - Weekly Digest (в топик Анонсы)
-
-📋 Управление топиками:
-/addtopic - добавить текущий топик для мониторинга
-/deletetopic - удалить текущий топик из мониторинга
-/listtopics - список отслеживаемых топиков
-/selectconductortopic - установить текущий топик для постов в понедельник
-/selectanouncestopic - установить текущий топик для дайджестов в пятницу
-/showconfig - показать текущую конфигурацию
-
-🤖 Управление AI моделями:
-/add_model <название> <модель> - добавить AI модель
-/remove_model <название> - удалить AI модель
-/models - список AI моделей
-
-🔧 Утилиты:
-/get_chat_id - показать ID текущего чата/топика
-/test_post <тип> - тестовая отправка поста
-/cleanup_messages - очистить старые сообщения из БД
-
-💡 Команды управления топиками должны выполняться внутри нужного топика!
-"""
-    await message.answer(welcome_text)
-
-
-# Обработчик команды /get_chat_id
-@dp.message(Command("get_chat_id"))
-async def cmd_get_chat_id(message: Message):
-    """Показывает ID текущего чата и топика"""
-    try:
-        chat_id = message.chat.id
-        chat_type = message.chat.type
-
-        # Определяем русское название типа чата
-        chat_type_names = {
-            "channel": "Канал",
-            "group": "Группа",
-            "supergroup": "Супергруппа",
-            "private": "Личные сообщения"
-        }
-        chat_type_name = chat_type_names.get(chat_type, chat_type)
-        chat_title = message.chat.title or "Без названия"
-
-        response = f"""
-📋 <b>Информация о текущем чате:</b>
-
-<b>Тип:</b> {chat_type_name}
-<b>ID чата:</b> <code>{chat_id}</code>
-<b>Название:</b> {chat_title}"""
-
-        # Если это топик форума, показываем ID топика
-        if hasattr(message, 'message_thread_id') and message.message_thread_id:
-            response += f"\n<b>ID топика:</b> <code>{message.message_thread_id}</code>"
-
-            # Проверяем, является ли этот топик источником
-            source_topics = db.get_source_topics()
-            is_source = any(topic['topic_id'] == message.message_thread_id for topic in source_topics)
-            response += f"\n<b>Статус:</b> {'✅ Источник' if is_source else '❌ Не источник'}"
-
-            # Проверяем, является ли системным топиком
-            conductor_topic = db.get_system_topic("conductor")
-            announcements_topic = db.get_system_topic("announcements")
-
-            if conductor_topic and conductor_topic['topic_id'] == message.message_thread_id:
-                response += f"\n<b>Назначение:</b> 🎯 Conductor (понедельник)"
-            elif announcements_topic and announcements_topic['topic_id'] == message.message_thread_id:
-                response += f"\n<b>Назначение:</b> 📢 Анонсы (пятница)"
-
-        response += f"""
-
-💡 <b>Команды для этого топика:</b>
-/addtopic - добавить в источники
-/deletetopic - удалить из источников
-/selectconductortopic - установить как Conductor
-/selectanouncestopic - установить как Анонсы
-"""
-        await message.answer(response, parse_mode="HTML")
-
-    except Exception as e:
-        logger.error(f"Error getting chat ID: {e}")
-        await message.answer("❌ Ошибка при получении ID чата")
-
-
-# Обработчик для пересланных сообщений
-@dp.message(F.forward_from_chat)
-async def handle_forwarded_message(message: Message):
-    """Обрабатывает пересланные сообщения и показывает ID чата/канала/топика"""
-    try:
-        if message.forward_from_chat:
-            chat = message.forward_from_chat
-
-            response = f"""
-📋 <b>Информация о пересланном чате/канале:</b>
-
-<b>Тип:</b> {chat.type}
-<b>ID чата:</b> <code>{chat.id}</code>
-<b>Название:</b> {chat.title or "Без названия"}
-"""
-
-            # Если есть информация о топике
-            if hasattr(message, 'forward_from_message_id'):
-                response += f"<b>ID сообщения:</b> {message.forward_from_message_id}\n"
-
-            response += f"""
-💡 <b>Команды для добавления:</b>
-<code>/addtopic {chat.id}</code> - добавить весь чат как источник
-
-💡 <i>Или используйте ID конкретного топика из настроек форума</i>
-"""
-            await message.answer(response, parse_mode="HTML")
-        else:
-            await message.answer("❌ Это не пересланное сообщение из чата/канала")
-
-    except Exception as e:
-        logger.error(f"Error processing forwarded message: {e}")
-        await message.answer("❌ Ошибка при обработке пересланного сообщения")
-
-
-# === КОМАНДЫ УПРАВЛЕНИЯ ТОПИКАМИ ===
-
-@dp.message(Command("addtopic"))
-async def cmd_add_topic(message: Message):
-    """Добавляет текущий топик для парсинга"""
-    try:
-        # Проверяем, что команда выполнена в топике форума
-        if not hasattr(message, 'message_thread_id') or not message.message_thread_id:
-            await message.answer(
-                "❌ Эта команда должна быть выполнена в конкретопике форума\n"
-                "💡 Перейдите в нужный топик и отправьте команду там"
-            )
-            return
-
-        topic_id = message.message_thread_id
-
-        # Получаем название топика из reply_to_message если есть
-        topic_name = "Без названия"
-        if (message.reply_to_message and
-                hasattr(message.reply_to_message, 'forum_topic_created') and
-                message.reply_to_message.forum_topic_created):
-            topic_name = message.reply_to_message.forum_topic_created.name or "Без названия"
-
-        if db.add_source_topic(topic_id, topic_name):
-            response = f"✅ Топик добавлен в источники:\nID: <code>{topic_id}</code>\nНазвание: {topic_name}"
-            await message.answer(response, parse_mode="HTML")
-        else:
-            await message.answer("❌ Ошибка при добавлении топика")
-
-    except Exception as e:
-        logger.error(f"Error adding topic: {e}")
-        await message.answer("❌ Ошибка при добавлении топика")
-
-
-@dp.message(Command("deletetopic"))
-async def cmd_delete_topic(message: Message):
-    """Удаляет текущий топик из источников"""
-    try:
-        # Проверяем, что команда выполнена в топике форума
-        if not hasattr(message, 'message_thread_id') or not message.message_thread_id:
-            await message.answer(
-                "❌ Эта команда должна быть выполнена в конкретном топике форума\n"
-                "💡 Перейдите в нужный топик и отправьте команду там"
-            )
-            return
-
-        topic_id = message.message_thread_id
-
-        if db.remove_source_topic(topic_id):
-            await message.answer(f"✅ Топик удален из источников\nID: <code>{topic_id}</code>", parse_mode="HTML")
-        else:
-            await message.answer(f"❌ Топик не найден в источниках\nID: <code>{topic_id}</code>", parse_mode="HTML")
-
-    except Exception as e:
-        logger.error(f"Error deleting topic: {e}")
-        await message.answer("❌ Ошибка при удалении топика")
-
-
-@dp.message(Command("listtopics"))
-async def cmd_list_topics(message: Message):
-    """Показывает список топиков-источников"""
-    try:
-        topics = db.get_source_topics()
-        if not topics:
-            await message.answer("📋 Нет добавленных топиков-источников")
-            return
-
-        topics_list = "\n".join([
-            f"• ID: <code>{topic['topic_id']}</code>" +
-            (f" - {topic['topic_name']}" if topic['topic_name'] else "")
-            for topic in topics
-        ])
-
-        await message.answer(f"📋 Топики-источники:\n{topics_list}", parse_mode="HTML")
-
-    except Exception as e:
-        logger.error(f"Error listing topics: {e}")
-        await message.answer("❌ Ошибка при получении списка топиков")
-
-
-@dp.message(Command("selectconductortopic"))
-async def cmd_select_conductor_topic(message: Message):
-    """Устанавливает текущий топик для публикации целей/блокеров (Пн)"""
-    try:
-        # Проверяем, что команда выполнена в топике форума
-        if not hasattr(message, 'message_thread_id') or not message.message_thread_id:
-            await message.answer(
-                "❌ Эта команда должна быть выполнена в конкретном топике форума\n"
-                "💡 Перейдите в нужный топик и отправьте команду там"
-            )
-            return
-
-        topic_id = message.message_thread_id
-
-        # Получаем название топика из reply_to_message если есть
-        topic_name = "Conductor"
-        if (message.reply_to_message and
-                hasattr(message.reply_to_message, 'forum_topic_created') and
-                message.reply_to_message.forum_topic_created):
-            topic_name = message.reply_to_message.forum_topic_created.name or "Conductor"
-
-        if db.set_system_topic("conductor", topic_id, topic_name):
-            response = f"✅ Топик Conductor установлен:\nID: <code>{topic_id}</code>\nНазвание: {topic_name}"
-            await message.answer(response, parse_mode="HTML")
-        else:
-            await message.answer("❌ Ошибка при установке топик Conductor")
-
-    except Exception as e:
-        logger.error(f"Error setting conductor topic: {e}")
-        await message.answer("❌ Ошибка при установке топика Conductor")
-
-
-@dp.message(Command("selectanouncestopic"))
-async def cmd_select_announcements_topic(message: Message):
-    """Устанавливает текущий топик для публикации дайджеста (Пт)"""
-    try:
-        # Проверяем, что команда выполнена в топике форума
-        if not hasattr(message, 'message_thread_id') or not message.message_thread_id:
-            await message.answer(
-                "❌ Эта команда должна быть выполнена в конкретном топике форума\n"
-                "💡 Перейдите в нужный топик и отправьте команду там"
-            )
-            return
-
-        topic_id = message.message_thread_id
-
-        # Получаем название топика из reply_to_message если есть
-        topic_name = "Анонсы"
-        if (message.reply_to_message and
-                hasattr(message.reply_to_message, 'forum_topic_created') and
-                message.reply_to_message.forum_topic_created):
-            topic_name = message.reply_to_message.forum_topic_created.name or "Анонсы"
-
-        if db.set_system_topic("announcements", topic_id, topic_name):
-            response = f"✅ Топик Анонсы установлен:\nID: <code>{topic_id}</code>\nНазвание: {topic_name}"
-            await message.answer(response, parse_mode="HTML")
-        else:
-            await message.answer("❌ Ошибка при установке топика Анонсы")
-
-    except Exception as e:
-        logger.error(f"Error setting announcements topic: {e}")
-        await message.answer("❌ Ошибка при установке топика Анонсы")
-
-
-@dp.message(Command("showconfig"))
-async def cmd_show_config(message: Message):
-    """Показывает текущую конфигурацию топиков"""
-    try:
-        # Получаем топики-источники
-        source_topics = db.get_source_topics()
-
-        # Получаем системные топики
-        conductor_topic = db.get_system_topic("conductor")
-        announcements_topic = db.get_system_topic("announcements")
-
-        # Получаем статистику сообщений из БД
-        recent_messages = db.get_messages_for_period(days=MESSAGE_RETENTION_DAYS)
-        total_messages = len(recent_messages)
-
-        response = "⚙️ <b>Текущая конфигурация:</b>\n\n"
-
-        response += "📥 <b>Топики-источники:</b>\n"
-        if source_topics:
-            for topic in source_topics:
-                response += f"• ID: <code>{topic['topic_id']}</code>"
-                if topic['topic_name']:
-                    response += f" - {topic['topic_name']}"
-                response += "\n"
-        else:
-            response += "❌ Не настроены\n"
-
-        response += "\n📤 <b>Системные топики:</b>\n"
-
-        if conductor_topic:
-            response += f"• Conductor (Пн): ID <code>{conductor_topic['topic_id']}</code>"
-            if conductor_topic['topic_name']:
-                response += f" - {conductor_topic['topic_name']}"
-            response += "\n"
-        else:
-            response += "• Conductor (Пн): ❌ Не настроен\n"
-
-        if announcements_topic:
-            response += f"• Анонсы (Пт): ID <code>{announcements_topic['topic_id']}</code>"
-            if announcements_topic['topic_name']:
-                response += f" - {announcements_topic['topic_name']}"
-            response += "\n"
-        else:
-            response += "• Анонсы (Пт): ❌ Не настроен\n"
-
-        response += f"\n💬 <b>Основной чат:</b> {MAIN_CHAT_ID or '❌ Не настроен'}"
-
-        # Статистика сообщений из БД
-        response += f"\n\n📊 <b>Сообщений в БД (за {MESSAGE_RETENTION_DAYS} дней):</b> {total_messages}"
-        response += f"\n<b>Отслеживаемых топиков:</b> {len(source_topics)}"
-
-        await message.answer(response, parse_mode="HTML")
-
-    except Exception as e:
-        logger.error(f"Error showing config: {e}")
-        await message.answer("❌ Ошибка при получении конфигурации")
-
-
-@dp.message(Command("cleanup_messages"))
-async def cmd_cleanup_messages(message: Message):
-    """Очищает старые сообщения из БД"""
-    try:
-        deleted_count = db.cleanup_old_messages(days=MESSAGE_RETENTION_DAYS)
-        await message.answer(f"✅ Очистка БД выполнена. Удалено сообщений: {deleted_count}")
-    except Exception as e:
-        logger.error(f"Error cleaning up messages: {e}")
-        await message.answer("❌ Ошибка при очистке БД")
-
-
-# === КОМАНДЫ УПРАВЛЕНИЯ AI МОДЕЛЯМИ ===
-
-@dp.message(Command("add_model"))
-async def cmd_add_model(message: Message):
-    try:
-        args = message.text.split()[1:]
-        if len(args) < 2:
-            await message.answer("❌ Использование: /add_model <название> <модель>\n"
-                                 "Пример: /add_model deepseek deepseek/deepseek-chat:free")
-            return
-
-        model_key = args[0]
-        model_value = " ".join(args[1:])
-
-        if ai_client.add_model(model_key, model_value):
-            await message.answer(f"✅ AI модель '{model_key}' добавлена: {model_value}")
-        else:
-            await message.answer("❌ Ошибка при добавлении модели или модель уже существует")
-    except Exception as e:
-        logger.error(f"Error adding model: {e}")
-        await message.answer("❌ Ошибка при добавлении AI модели")
-
-
-@dp.message(Command("remove_model"))
-async def cmd_remove_model(message: Message):
-    try:
-        args = message.text.split()[1:]
-        if not args:
-            await message.answer("❌ Использование: /remove_model <название>\nПример: /remove_model deepseek")
-            return
-
-        model_key = args[0]
-
-        if ai_client.remove_model(model_key):
-            await message.answer(f"✅ AI модель '{model_key}' удалена")
-        else:
-            await message.answer(f"❌ AI модель '{model_key}' не найдена")
-    except Exception as e:
-        logger.error(f"Error removing model: {e}")
-        await message.answer("❌ Ошибка при удалении AI модели")
-
-
-@dp.message(Command("models"))
-async def cmd_models(message: Message):
-    try:
-        models_text = ai_client.get_available_models()
-        await message.answer(models_text)
-    except Exception as e:
-        logger.error(f"Error getting models: {e}")
-        await message.answer("❌ Ошибка при получении списка AI моделей")
-
-
-# === ТЕСТОВЫЕ КОМАНДЫ ===
-
-@dp.message(Command("test_post"))
-async def cmd_test_post(message: Message):
-    """Тестовая команда для отправки примеров постов"""
-    try:
-        args = message.text.split()[1:]
-        post_type = args[0] if args else "monday"
-
-        if post_type == "monday":
-            await send_test_monday_post(message)
-        elif post_type == "friday":
-            await send_test_friday_digest(message)
-        else:
-            await message.answer(
-                "❌ Использование: /test_post <тип>\n"
-                "Типы:\n"
-                "• monday - тест понедельничного поста\n"
-                "• friday - тест пятничного дайджеста\n"
-                "Пример: /test_post monday"
-            )
-
-    except Exception as e:
-        logger.error(f"Error in test_post command: {e}")
-        await message.answer("❌ Ошибка при создании тестового поста")
-
-
-async def send_test_monday_post(message: Message):
-    """Отправляет тестовый понедельничный пост"""
-    try:
-        # Получаем сообщения из БД за последнюю неделю
-        recent_messages = db.get_messages_for_period(days=MESSAGE_RETENTION_DAYS)
-
-        if not recent_messages:
-            # Если нет сообщений в БД, используем тестовые
-            test_messages = [
-                "Нужно доработать авторизацию в проекте",
-                "Проблемы с производительностью на мобильных устройствах",
-                "Ищем фронтенд разработчика в команду",
-                "Обсуждаем дизайн главной страницы"
-            ]
-            message_texts = test_messages
-            logger.info("Используются тестовые сообщения для демонстрации")
-        else:
-            message_texts = [msg['message_text'] for msg in recent_messages if msg['message_text']]
-
-        prompt = f"""
-На основе сообщений из топиков сообщества за последние дни, предложи цели и возможные блокеры на текущую неделю.
-
-Сообщения из топиков:
-{"; ".join(message_texts)}
-
-Формат ответа:
-🎯 Цели недели:
-1. [цель 1]
-2. [цель 2]
-
-🛑 Возможные блокеры:
-• [блокер 1]
-• [блокер 2]
-
-💡 Рекомендации:
-- [рекомендация]
-
-Будь конкретным и ориентированным на действие.
-"""
-
-        analysis = ai_client.send_request(prompt)
-
-        post_text = f"📅 **Понедельник: Цели и блокеры недели**\n\n{analysis}"
-
-        # Пытаемся отправить в системный топик Conductor
-        conductor_topic = db.get_system_topic("conductor")
-        if conductor_topic:
-            try:
-                await bot.send_message(
-                    chat_id=MAIN_CHAT_ID,
-                    message_thread_id=conductor_topic['topic_id'],
-                    text="🔬 **ТЕСТОВЫЙ ПОСТ:**\n" + post_text,
-                    parse_mode="Markdown"
-                )
-                await message.answer(f"✅ Тестовый пост отправлен в топик Conductor (ID: {conductor_topic['topic_id']})")
-            except Exception as e:
-                logger.error(f"Error sending to conductor topic: {e}")
-                await message.answer(f"❌ Ошибка отправки в топик Conductor: {e}")
-        else:
-            await message.answer("❌ Топик Conductor не настроен. Используйте /selectconductortopic")
-
-        logger.info("Тестовый понедельничный пост создан")
-
-    except Exception as e:
-        logger.error(f"Error sending test Monday post: {e}")
-        await message.answer("❌ Ошибка при создании тестового понедельничного поста")
-
-
-async def send_test_friday_digest(message: Message):
-    """Отправляет тестовый пятничный дайджест"""
-    try:
-        # Получаем сообщения из БД за последнюю неделю
-        recent_messages = db.get_messages_for_period(days=MESSAGE_RETENTION_DAYS)
-
-        if not recent_messages:
-            # Если нет сообщений в БД, используем тестовые
-            test_messages = [
-                "Запустили новую фичу авторизации",
-                "Обсуждаем дизайн главной страницы",
-                "Проблемы с производительностью на мобильных устройствах",
-                "Ищем фронтенд разработчика в команду",
-                "Провели успешный деплой в продакшен"
-            ]
-            message_texts = test_messages
-            logger.info("Используются тестовые сообщения для демонстрации")
-        else:
-            message_texts = [msg['message_text'] for msg in recent_messages if msg['message_text']]
-
-        prompt = f"""
-Создай еженедельный дайджест на основе сообщений из топиков сообщества.
-
-Сообщения из топиков:
-{"; ".join(message_texts)}
-
-Структура дайджеста:
-👥 Новые участники
-💡 Идеи 
-🔬 Лаб (next/stop)
-🚀 Апдейты проектов
-🆘 Помощь 
-🛠 Инструмент недели
-✅ Решения
-
-Будь кратким, информативным и используй эмодзи для наглядности.
-"""
-
-        analysis = ai_client.send_request(prompt)
-
-        post_text = f"📊 **Weekly Digest**\n\n{analysis}"
-
-        # Пытаемся отправить в системный топик Анонсы
-        announcements_topic = db.get_system_topic("announcements")
-        if announcements_topic:
-            try:
-                await bot.send_message(
-                    chat_id=MAIN_CHAT_ID,
-                    message_thread_id=announcements_topic['topic_id'],
-                    text="🔬 **ТЕСТОВЫЙ ДАЙДЖЕСТ:**\n" + post_text,
-                    parse_mode="Markdown"
-                )
-                await message.answer(
-                    f"✅ Тестовый дайджест отправлен в топик Анонсы (ID: {announcements_topic['topic_id']})")
-            except Exception as e:
-                logger.error(f"Error sending to announcements topic: {e}")
-                await message.answer(f"❌ Ошибка отправки в топик Анонсы: {e}")
-        else:
-            await message.answer("❌ Топик Анонсы не настроен. Используйте /selectanouncestopic")
-
-        logger.info("Тестовый пятничный дайджест создан")
-
-    except Exception as e:
-        logger.error(f"Error sending test Friday digest: {e}")
-        await message.answer("❌ Ошибка при создании тестового пятничного дайджеста")
+db = Database()
+ai_client = AIClient()
+
+
+# === РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ===
+def register_all_handlers():
+    """Регистрирует все обработчики бота"""
+    register_command_handlers(dp, db, ai_client)
+    register_topic_handlers(dp, db, MAIN_CHAT_ID)
+    register_message_handlers(dp, db, MAIN_CHAT_ID, bot, ai_client)
+
+    # Регистрация кастомного фильтра для топиков-источников
+    dp.message.register(
+        handle_source_topic_messages,
+        SourceTopicsFilter(db, MAIN_CHAT_ID)
+    )
 
 
 # === ОБРАБОТЧИКИ СООБЩЕНИЙ ИЗ ТОПИКОВ ===
-
-class SourceTopicsFilter(Filter):
-    def __init__(self, db):
-        self.db = db
-
-    async def __call__(self, message: Message) -> bool:
-        # Проверяем, что сообщение из основного чата
-        if str(message.chat.id) != MAIN_CHAT_ID:
-            return False
-
-        # Получаем список топиков-источников
-        source_topics = self.db.get_source_topics()
-        source_topic_ids = [topic['topic_id'] for topic in source_topics]
-
-        # Проверяем, что сообщение из нужного топика
-        return (hasattr(message, 'message_thread_id') and
-                message.message_thread_id in source_topic_ids)
-
-
-@dp.message(SourceTopicsFilter(db))
-async def handle_source_topic_messages(message: Message):
+async def handle_source_topic_messages(message):
     """Обрабатывает сообщения из топиков-источников"""
-    await process_topic_message(message)
+    await process_topic_message(message, db)
 
 
-async def process_topic_message(message: Message):
+async def process_topic_message(message, db):
     """Обрабатывает и сохраняет сообщение из топика в БД"""
     try:
         topic_id = message.message_thread_id
@@ -648,8 +89,7 @@ async def process_topic_message(message: Message):
 
 
 # === ТРЕХСТУПЕНЧАТАЯ КЛАССИФИКАЦИЯ ===
-
-async def process_unprocessed_messages():
+async def process_unprocessed_messages(db, ai_client):
     """Обрабатывает необработанные сообщения трехступенчатым методом"""
     try:
         unprocessed_messages = db.get_unprocessed_messages()
@@ -659,13 +99,13 @@ async def process_unprocessed_messages():
         active_threads = db.get_active_threads_with_messages(days=7)
 
         for message in unprocessed_messages:
-            await three_step_classification(message, active_threads)
+            await three_step_classification(message, active_threads, db, ai_client)
 
     except Exception as e:
         logger.error(f"Ошибка обработки необработанных сообщений: {e}")
 
 
-async def three_step_classification(message_data: Dict, active_threads: List[Dict]):
+async def three_step_classification(message_data, active_threads, db, ai_client):
     """Трехступенчатый процесс классификации сообщения"""
     try:
         message_id = message_data['message_id']
@@ -711,46 +151,8 @@ async def three_step_classification(message_data: Dict, active_threads: List[Dic
         logger.error(f"Ошибка трехступенчатой классификации для сообщения {message_data['message_id']}: {e}")
 
 
-# Добавляем в scheduled_posting периодическую обработку
-async def scheduled_posting():
-    """Запускает периодическую проверку времени для постинга и обработки"""
-    while True:
-        try:
-            now = datetime.now()
-            current_time = now.strftime("%H:%M")
-            weekday = now.strftime("%A")
-
-            # Каждые 5 минут обрабатываем необработанные сообщения
-            if current_time.endswith(
-                    (':00', ':05', ':10', ':15', ':20', ':25', ':30', ':35', ':40', ':45', ':50', ':55')):
-                await process_unprocessed_messages()
-
-            # Понедельник 10:00 - цели/блокеры
-            if weekday == "Monday" and current_time == "10:00":
-                await create_monday_post()
-                await asyncio.sleep(60)
-
-            # Пятница 19:00 - Weekly Digest
-            elif weekday == "Friday" and current_time == "19:00":
-                await create_friday_digest()
-                await asyncio.sleep(60)
-
-            # Ежедневная очистка в 03:00
-            elif current_time == "03:00":
-                deleted_count = db.cleanup_old_messages(days=MESSAGE_RETENTION_DAYS)
-                if deleted_count > 0:
-                    logger.info(f"Автоочистка БД: удалено {deleted_count} старых сообщений")
-                await asyncio.sleep(60)
-
-            await asyncio.sleep(30)
-
-        except Exception as e:
-            logger.error(f"Error in scheduled posting: {e}")
-            await asyncio.sleep(60)
-
-
-# Обновляем create_monday_post для использования схемы А
-async def create_monday_post():
+# === АВТОМАТИЧЕСКИЕ ПОСТЫ ===
+async def create_monday_post(bot, db, ai_client, main_chat_id):
     """Создает пост с целями/блокерами на неделю (Пн 10:00)"""
     try:
         conductor_topic = db.get_system_topic("conductor")
@@ -771,7 +173,7 @@ async def create_monday_post():
         full_post = f"📅 **Понедельник: Цели и блокеры недели**\n\n{post_text}"
 
         await bot.send_message(
-            chat_id=MAIN_CHAT_ID,
+            chat_id=main_chat_id,
             message_thread_id=conductor_topic['topic_id'],
             text=full_post,
             parse_mode="Markdown"
@@ -783,7 +185,7 @@ async def create_monday_post():
         logger.error(f"Error creating Monday post: {e}")
 
 
-async def create_friday_digest():
+async def create_friday_digest(bot, db, ai_client, main_chat_id):
     """Создает еженедельный дайджест (Пт 19:00)"""
     try:
         announcements_topic = db.get_system_topic("announcements")
@@ -800,29 +202,15 @@ async def create_friday_digest():
 
         message_texts = [msg['message_text'] for msg in recent_messages if msg['message_text']]
 
-        prompt = f"""
-Создай еженедельный дайджест на основе сообщений из топиков сообщества.
-
-Сообщения из топиков:
-{"; ".join(message_texts[:50])}
-
-Структура дайджеста:
-👥 Новые участники
-💡 Идеи 
-🔬 Лаб (next/stop)
-🚀 Апдейты проектов
-🆘 Помощь 
-🛠️ Инструмент недели
-✅ Решения
-
-Будь кратким, информативным и используй эмодзи для наглядности.
-"""
+        # Используем промпт из файла
+        prompt = ai_client.load_prompt("friday")
+        prompt += f"\n\nСообщения из топиков:\n{'; '.join(message_texts[:50])}"
 
         analysis = ai_client.send_request(prompt)
         post_text = f"📊 **Weekly Digest**\n\n{analysis}"
 
         await bot.send_message(
-            chat_id=MAIN_CHAT_ID,
+            chat_id=main_chat_id,
             message_thread_id=announcements_topic['topic_id'],
             text=post_text,
             parse_mode="Markdown"
@@ -833,9 +221,48 @@ async def create_friday_digest():
     except Exception as e:
         logger.error(f"Error creating Friday digest: {e}")
 
-# === ЗАПУСК БОТА ===
 
+# === ПЛАНИРОВЩИК ЗАДАЧ ===
+async def scheduled_posting(bot, db, ai_client, main_chat_id):
+    """Запускает периодическую проверку времени для постинга и обработки"""
+    while True:
+        try:
+            now = datetime.now()
+            current_time = now.strftime("%H:%M")
+            weekday = now.strftime("%A")
+
+            # Каждые 5 минут обрабатываем необработанные сообщения
+            if current_time.endswith(
+                    (':00', ':05', ':10', ':15', ':20', ':25', ':30', ':35', ':40', ':45', ':50', ':55')):
+                await process_unprocessed_messages(db, ai_client)
+
+            # Понедельник 10:00 - цели/блокеры
+            if weekday == "Monday" and current_time == "10:00":
+                await create_monday_post(bot, db, ai_client, main_chat_id)
+                await asyncio.sleep(60)
+
+            # Пятница 19:00 - Weekly Digest
+            elif weekday == "Friday" and current_time == "19:00":
+                await create_friday_digest(bot, db, ai_client, main_chat_id)
+                await asyncio.sleep(60)
+
+            # Ежедневная очистка в 03:00
+            elif current_time == "03:00":
+                deleted_count = db.cleanup_old_messages(days=MESSAGE_RETENTION_DAYS)
+                if deleted_count > 0:
+                    logger.info(f"Автоочистка БД: удалено {deleted_count} старых сообщений")
+                await asyncio.sleep(60)
+
+            await asyncio.sleep(30)
+
+        except Exception as e:
+            logger.error(f"Error in scheduled posting: {e}")
+            await asyncio.sleep(60)
+
+
+# === ЗАПУСК БОТА ===
 async def main():
+    """Основная функция запуска бота"""
     logger.info("🚀 Weekly-дайджест бот запускается...")
 
     # Показываем конфигурацию при запуске
@@ -853,8 +280,11 @@ async def main():
     stats = ai_client.get_stats()
     logger.info(f"AI моделей: {stats['ai_models']}")
 
+    # Регистрируем все обработчики
+    register_all_handlers()
+
     # Запускаем фоновую задачу постинга
-    asyncio.create_task(scheduled_posting())
+    asyncio.create_task(scheduled_posting(bot, db, ai_client, MAIN_CHAT_ID))
 
     # Запускаем бота
     await dp.start_polling(bot)

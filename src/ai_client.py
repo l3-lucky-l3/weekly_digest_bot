@@ -3,7 +3,6 @@ import logging
 from dotenv import load_dotenv
 from openai import OpenAI
 from typing import Dict, List
-from db import Database
 
 load_dotenv()
 
@@ -22,73 +21,21 @@ class AIClient:
         )
 
         # Инициализация базы данных
+        from db import Database
         self.db = Database()
 
         # Загружаем модели из базы данных
         self.models: Dict[str, str] = self.db.get_all_models()
 
-    def analyze_chat_messages(self, messages: List[str]) -> str:
-        """Анализирует сообщения из чата и возвращает суммаризацию"""
-        if not self.models:
-            return "❌ Нет доступных AI моделей для анализа"
-
-        # Объединяем сообщения для анализа
-        context = "\n".join(
-            [f"Сообщение {i + 1}: {msg}" for i, msg in enumerate(messages[-50:])])  # Берем последние 50 сообщений
-
-        prompt = f"""
-Проанализируй следующие сообщения из чата и создай краткую сводку основных тем, вопросов и обсуждений:
-
-{context}
-
-Создай структурированную сводку в формате:
-1. Основные темы обсуждения
-2. Ключевые вопросы
-3. Важные моменты
-4. Рекомендации или выводы
-
-Будь кратким и информативным.
-"""
-
+    def load_prompt(self, prompt_name: str) -> str:
+        """Загружает промпт из файла"""
         try:
-            # Используем первую доступную модель
-            model_key = list(self.models.keys())[0]
-            return self.send_request(prompt, model_key)
+            prompt_path = os.path.join(os.path.dirname(__file__), "prompts", f"{prompt_name}.md")
+            with open(prompt_path, 'r', encoding='utf-8') as f:
+                return f.read()
         except Exception as e:
-            logger.error(f"Ошибка анализа сообщений: {e}")
-            # Пробуем другие модели при ошибке
-            for model_key in list(self.models.keys())[1:]:
-                try:
-                    return self.send_request(prompt, model_key)
-                except Exception:
-                    continue
-            return f"❌ Все AI модели недоступны для анализа: {str(e)}"
-
-    def format_for_channel(self, content: str, style: str = "professional") -> str:
-        """Форматирует контент для постинга в канал"""
-        if not self.models:
-            return content  # Возвращаем как есть, если нет моделей
-
-        prompt = f"""
-Отформатируй следующий текст для постинга в Telegram канал в {style} стиле:
-
-{content}
-
-Сделай текст:
-- Структурированным и легко читаемым
-- С использованием эмодзи для наглядности
-- С четкими разделами
-- Оптимизированным для Telegram (не слишком длинным)
-
-Верни только отформатированный текст без дополнительных комментариев.
-"""
-
-        try:
-            model_key = list(self.models.keys())[0]
-            return self.send_request(prompt, model_key)
-        except Exception as e:
-            logger.error(f"Ошибка форматирования: {e}")
-            return content  # Возвращаем оригинальный контент при ошибке
+            logger.error(f"Ошибка загрузки промпта {prompt_name}: {e}")
+            return f"Промпт {prompt_name} не найден"
 
     def send_request(self, message: str, model_key: str = None) -> str:
         """Отправляет запрос к AI с автоматическим переключением моделей при ошибках"""

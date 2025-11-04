@@ -10,8 +10,8 @@ from db import Database
 from ai_client import AIClient
 from handlers.commands import register_command_handlers
 from handlers.topics import register_topic_handlers
-from handlers.messages import register_message_handlers
 from utils.filters import SourceTopicsFilter
+from services.posting_service import PostingService
 
 
 # === КОНФИГУРАЦИЯ ===
@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 MESSAGE_RETENTION_DAYS = 7
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MAIN_CHAT_ID = os.getenv("MAIN_CHAT_ID")
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
 # Проверка обязательных переменных
 if not BOT_TOKEN:
@@ -36,19 +37,22 @@ if not BOT_TOKEN:
 if not MAIN_CHAT_ID:
     logger.warning("MAIN_CHAT_ID не установлен в .env файле")
 
+if not ADMIN_CHAT_ID:
+    logger.warning("ADMIN_CHAT_ID не установлен в .env файле")
+
 # Инициализация компонентов
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 db = Database()
 ai_client = AIClient()
+posting_service = PostingService(db, ai_client, MAIN_CHAT_ID, ADMIN_CHAT_ID)
 
 
 # === РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ===
 def register_all_handlers():
     """Регистрирует все обработчики бота"""
-    register_command_handlers(dp, db, ai_client)
+    register_command_handlers(dp, db, bot, ai_client, posting_service)
     register_topic_handlers(dp, db, MAIN_CHAT_ID)
-    register_message_handlers(dp, db, MAIN_CHAT_ID, bot, ai_client)
 
     # Регистрация кастомного фильтра для топиков-источников
     dp.message.register(
@@ -60,10 +64,10 @@ def register_all_handlers():
 # === ОБРАБОТЧИКИ СООБЩЕНИЙ ИЗ ТОПИКОВ ===
 async def handle_source_topic_messages(message):
     """Обрабатывает сообщения из топиков-источников"""
-    await process_topic_message(message, db)
+    await process_topic_message(message)
 
 
-async def process_topic_message(message, db):
+async def process_topic_message(message):
     """Обрабатывает и сохраняет сообщение из топика в БД"""
     try:
         topic_id = message.message_thread_id
@@ -89,7 +93,7 @@ async def process_topic_message(message, db):
 
 
 # === ТРЕХСТУПЕНЧАТАЯ КЛАССИФИКАЦИЯ ===
-async def process_unprocessed_messages(db, ai_client):
+async def process_unprocessed_messages():
     """Обрабатывает необработанные сообщения трехступенчатым методом"""
     try:
         unprocessed_messages = db.get_unprocessed_messages()
@@ -99,13 +103,13 @@ async def process_unprocessed_messages(db, ai_client):
         active_threads = db.get_active_threads_with_messages(days=7)
 
         for message in unprocessed_messages:
-            await three_step_classification(message, active_threads, db, ai_client)
+            await three_step_classification(message, active_threads)
 
     except Exception as e:
         logger.error(f"Ошибка обработки необработанных сообщений: {e}")
 
 
-async def three_step_classification(message_data, active_threads, db, ai_client):
+async def three_step_classification(message_data, active_threads):
     """Трехступенчатый процесс классификации сообщения"""
     try:
         message_id = message_data['message_id']
@@ -151,76 +155,8 @@ async def three_step_classification(message_data, active_threads, db, ai_client)
         logger.error(f"Ошибка трехступенчатой классификации для сообщения {message_data['message_id']}: {e}")
 
 
-# === АВТОМАТИЧЕСКИЕ ПОСТЫ ===
-async def create_monday_post(bot, db, ai_client, main_chat_id):
-    """Создает пост с целями/блокерами на неделю (Пн 10:00)"""
-    try:
-        conductor_topic = db.get_system_topic("conductor")
-        if not conductor_topic:
-            logger.error("Топик Conductor не настроен")
-            return
-
-        # Получаем активные треды за последнюю неделю
-        active_threads = db.get_active_threads_with_messages(days=7)
-
-        if not active_threads:
-            logger.info("Нет активных тредов для понедельничного поста")
-            return
-
-        # Используем схему А для суммаризации
-        post_text = await ai_client.summarize_for_monday_schema_a(active_threads)
-
-        await bot.send_message(
-            chat_id=main_chat_id,
-            message_thread_id=conductor_topic['topic_id'],
-            text=post_text,
-            parse_mode="HTML"
-        )
-
-        logger.info("Понедельничный пост опубликован (схема А)")
-
-    except Exception as e:
-        logger.error(f"Error creating Monday post: {e}")
-
-
-async def create_friday_digest(bot, db, ai_client, main_chat_id):
-    """Создает еженедельный дайджест (Пт 19:00)"""
-    try:
-        announcements_topic = db.get_system_topic("announcements")
-        if not announcements_topic:
-            logger.error("Топик Анонсы не настроен")
-            return
-
-        # Получаем сообщения из БД за последнюю неделю
-        recent_messages = db.get_messages_for_period(days=MESSAGE_RETENTION_DAYS)
-
-        if not recent_messages:
-            logger.info("Нет сообщений в БД для Friday Digest")
-            return
-
-        message_texts = [msg['message_text'] for msg in recent_messages if msg['message_text']]
-
-        # Используем промпт из файла
-        prompt = ai_client.load_prompt("friday")
-        prompt += f"\n\nСообщения из топиков:\n{'; '.join(message_texts[:50])}"
-
-        post_text = await ai_client.send_request(prompt)
-
-        await bot.send_message(
-            chat_id=main_chat_id,
-            message_thread_id=announcements_topic['topic_id'],
-            text=post_text,
-            parse_mode="HTML"
-        )
-
-        logger.info("Пятничный дайджест опубликован")
-
-    except Exception as e:
-        logger.error(f"Error creating Friday digest: {e}")
-
-
 # === ПЛАНИРОВЩИК ЗАДАЧ ===
-async def scheduled_posting(bot, db, ai_client, main_chat_id):
+async def scheduled_posting():
     """Запускает периодическую проверку времени для постинга и обработки"""
     while True:
         try:
@@ -231,16 +167,16 @@ async def scheduled_posting(bot, db, ai_client, main_chat_id):
             # Каждые 5 минут обрабатываем необработанные сообщения
             if current_time.endswith(
                     (':00', ':05', ':10', ':15', ':20', ':25', ':30', ':35', ':40', ':45', ':50', ':55')):
-                await process_unprocessed_messages(db, ai_client)
+                await process_unprocessed_messages()
 
             # Понедельник 10:00 - цели/блокеры
             if weekday == "Monday" and current_time == "10:00":
-                await create_monday_post(bot, db, ai_client, main_chat_id)
+                await posting_service.create_monday_post(bot)
                 await asyncio.sleep(60)
 
             # Пятница 19:00 - Weekly Digest
             elif weekday == "Friday" and current_time == "19:00":
-                await create_friday_digest(bot, db, ai_client, main_chat_id)
+                await posting_service.create_friday_digest(bot)
                 await asyncio.sleep(60)
 
             # Ежедневная очистка в 03:00
@@ -281,7 +217,7 @@ async def main():
     register_all_handlers()
 
     # Запускаем фоновую задачу постинга
-    asyncio.create_task(scheduled_posting(bot, db, ai_client, MAIN_CHAT_ID))
+    asyncio.create_task(scheduled_posting())
 
     # Запускаем бота
     await dp.start_polling(bot)

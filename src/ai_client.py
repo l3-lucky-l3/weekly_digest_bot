@@ -28,16 +28,6 @@ class AIClient:
         # Загружаем модели из базы данных
         self.models: Dict[str, str] = self.db.get_all_models()
 
-    def load_prompt(self, prompt_name: str) -> str:
-        """Загружает промпт из файла"""
-        try:
-            prompt_path = os.path.join(os.path.dirname(__file__), "prompts", f"{prompt_name}.md")
-            with open(prompt_path, 'r', encoding='utf-8') as f:
-                return f.read()
-        except Exception as e:
-            logger.error(f"Ошибка загрузки промпта {prompt_name}: {e}")
-            return f"Промпт {prompt_name} не найден"
-
     async def send_request_with_retry(self, message: str, model_key: str = None, max_retries: int = 3) -> str:
         """Отправляет запрос с повторными попытками"""
         last_error = None

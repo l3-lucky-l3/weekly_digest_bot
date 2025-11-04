@@ -62,7 +62,7 @@ class Database:
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS chat_messages (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        message_id INTEGER NOT NULL,
+                        message_id INTEGER,
                         topic_id INTEGER,
                         thread_id INTEGER,
                         parent_message_id INTEGER,
@@ -82,6 +82,14 @@ class Database:
                         classification_id TEXT, -- 'goal', 'blocker'
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         is_active BOOLEAN DEFAULT TRUE
+                    )
+                ''')
+
+                # Таблица для промптов
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS prompts (
+                        type TEXT,
+                        text TEXT
                     )
                 ''')
 
@@ -183,7 +191,7 @@ class Database:
 
     # === Методы для сообщений ===
 
-    def save_message(self, message_data: Dict) -> bool:
+    def save_message(self, message_data: Dict) -> int:
         """Сохраняет сообщение в базу"""
         try:
             with sqlite3.connect(self.db_path) as conn:
@@ -191,20 +199,68 @@ class Database:
                 cursor.execute('''
                     INSERT OR REPLACE INTO chat_messages 
                     (message_id, topic_id, thread_id, parent_message_id, classification_id, message_text)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     message_data.get('message_id'),
                     message_data.get('topic_id'),
                     message_data.get('thread_id'),
                     message_data.get('parent_message_id'),
                     message_data.get('classification_id'),
-                    message_data.get('message_text')
+                    message_data.get('message_text'),
+                    message_data.get('processed')
                 ))
                 conn.commit()
-                return True
+                return cursor.lastrowid
         except Exception as e:
             logger.error(f"Ошибка сохранения сообщения: {e}")
+            return 0
+
+    def update_message_text(self, message_id: int, new_text: str) -> bool:
+        """Обновляет текст сообщения по ID"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE chat_messages SET message_text = ? WHERE id = ?",
+                    (new_text, message_id)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Ошибка обновления текста сообщения: {e}")
             return False
+
+    def update_telegram_message_id(self, message_obj_id: int, telegram_message_id: int) -> bool:
+        """Обновляет telegram message_id для записи в БД"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE chat_messages SET message_id = ? WHERE id = ?",
+                    (telegram_message_id, message_obj_id)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Ошибка обновления message_id: {e}")
+            return False
+
+    def get_message_by_id(self, message_id: int) -> Optional[Dict]:
+        """Получает сообщение по ID"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT * FROM chat_messages WHERE id = ?
+                ''', (message_id,))
+                row = cursor.fetchone()
+                if row:
+                    columns = [description[0] for description in cursor.description]
+                    return dict(zip(columns, row))
+                return None
+        except Exception as e:
+            logger.error(f"Ошибка получения сообщения по ID: {e}")
+            return None
 
     def get_messages_for_period(self, days: int = 7) -> List[Dict]:
         """Получает сообщения за указанный период"""
@@ -459,4 +515,58 @@ class Database:
                     return False
         except Exception as e:
             logger.error(f"Ошибка удаления AI модели: {e}")
+            return False
+
+    # === Методы для работы с промптами ===
+
+    def get_prompt(self, prompt_type: str) -> Optional[str]:
+        """Получает промпт по типу (возвращает один промпт)"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT text FROM prompts WHERE type = ? ORDER BY rowid LIMIT 1",
+                    (prompt_type,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    return row[0]
+                return None
+        except Exception as e:
+            logger.error(f"Ошибка получения промпта типа '{prompt_type}': {e}")
+            return None
+
+    def update_prompt(self, prompt_type: str, prompt_text: str) -> bool:
+        """Обновляет или создает промпт по типу"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+
+                # Сначала проверяем, существует ли уже промпт такого типа
+                cursor.execute(
+                    "SELECT 1 FROM prompts WHERE type = ? LIMIT 1",
+                    (prompt_type,)
+                )
+                exists = cursor.fetchone() is not None
+
+                if exists:
+                    # Обновляем существующий промпт
+                    cursor.execute(
+                        "UPDATE prompts SET text = ? WHERE type = ?",
+                        (prompt_text, prompt_type)
+                    )
+                    logger.info(f"Промпт типа '{prompt_type}' обновлен")
+                else:
+                    # Создаем новый промпт
+                    cursor.execute(
+                        "INSERT INTO prompts (type, text) VALUES (?, ?)",
+                        (prompt_type, prompt_text)
+                    )
+                    logger.info(f"Создан новый промпт типа '{prompt_type}'")
+
+                conn.commit()
+                return True
+
+        except Exception as e:
+            logger.error(f"Ошибка обновления промпта типа '{prompt_type}': {e}")
             return False

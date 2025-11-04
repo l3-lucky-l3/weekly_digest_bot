@@ -54,9 +54,7 @@ async def send_test_monday_post(message: Message, bot, db, ai_client, main_chat_
         prompt = ai_client.load_prompt("monday")
         prompt += f"\n\nСообщения из топиков:\n{'; '.join(message_texts)}"
 
-        analysis = await ai_client.send_request_with_retry(prompt)
-
-        post_text = f"📅 **Понедельник: Цели и блокеры недели**\n\n{analysis}"
+        post_text = await ai_client.send_request_with_retry(prompt)
 
         # Пытаемся отправить в системный топик Conductor
         conductor_topic = db.get_system_topic("conductor")
@@ -65,8 +63,8 @@ async def send_test_monday_post(message: Message, bot, db, ai_client, main_chat_
                 await bot.send_message(
                     chat_id=main_chat_id,
                     message_thread_id=conductor_topic['topic_id'],
-                    text="🔬 **ТЕСТОВЫЙ ПОСТ:**\n" + post_text,
-                    parse_mode="Markdown"
+                    text=post_text,
+                    parse_mode="HTML"
                 )
                 await message.answer(f"✅ Тестовый пост отправлен в топик Conductor (ID: {conductor_topic['topic_id']})")
             except Exception as e:
@@ -106,9 +104,7 @@ async def send_test_friday_digest(message: Message, bot, db, ai_client, main_cha
         prompt = ai_client.load_prompt("friday")
         prompt += f"\n\nСообщения из топиков:\n{'; '.join(message_texts)}"
 
-        analysis = await ai_client.send_request_with_retry(prompt)
-
-        post_text = f"📊 **Weekly Digest**\n\n{analysis}"
+        post_text = await ai_client.send_request_with_retry(prompt)
 
         # Пытаемся отправить в системный топик Анонсы
         announcements_topic = db.get_system_topic("announcements")
@@ -117,8 +113,8 @@ async def send_test_friday_digest(message: Message, bot, db, ai_client, main_cha
                 await bot.send_message(
                     chat_id=main_chat_id,
                     message_thread_id=announcements_topic['topic_id'],
-                    text="🔬 **ТЕСТОВЫЙ ДАЙДЖЕСТ:**\n" + post_text,
-                    parse_mode="Markdown"
+                    text=post_text,
+                    parse_mode="HTML"
                 )
                 await message.answer(
                     f"✅ Тестовый дайджест отправлен в топик Анонсы (ID: {announcements_topic['topic_id']})")

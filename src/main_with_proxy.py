@@ -5,6 +5,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.session.aiohttp import AiohttpSession  # TODO del | this for pythonanywhere
 
 from db import Database
 from ai_client import AIClient
@@ -36,8 +37,24 @@ if not BOT_TOKEN:
 if not MAIN_CHAT_ID:
     logger.warning("MAIN_CHAT_ID не установлен в .env файле")
 
+
+# TODO del | this for pythonanywhere
+PROXY_URL = "http://proxy.server:3128"
+
+
+def create_bot_with_proxy():
+    """Создает бота с настройкой прокси"""
+    session = None
+    if PROXY_URL:
+        session = AiohttpSession(proxy=PROXY_URL)
+        logger.info("Используется прокси для подключения к Telegram")
+
+    return Bot(token=BOT_TOKEN, session=session)
+
+
 # Инициализация компонентов
-bot = Bot(token=BOT_TOKEN)
+# bot = Bot(token=BOT_TOKEN)  # TODO uncomm
+bot = create_bot_with_proxy()  # TODO del | this for pythonanywhere
 dp = Dispatcher()
 db = Database()
 ai_client = AIClient()
@@ -170,10 +187,12 @@ async def create_monday_post(bot, db, ai_client, main_chat_id):
         # Используем схему А для суммаризации
         post_text = await ai_client.summarize_for_monday_schema_a(active_threads)
 
+        full_post = f"📅 **Понедельник: Цели и блокеры недели**\n\n{post_text}"
+
         await bot.send_message(
             chat_id=main_chat_id,
             message_thread_id=conductor_topic['topic_id'],
-            text=post_text,
+            text=full_post,
             parse_mode="HTML"
         )
 
@@ -204,7 +223,8 @@ async def create_friday_digest(bot, db, ai_client, main_chat_id):
         prompt = ai_client.load_prompt("friday")
         prompt += f"\n\nСообщения из топиков:\n{'; '.join(message_texts[:50])}"
 
-        post_text = await ai_client.send_request(prompt)
+        analysis = await ai_client.send_request(prompt)
+        post_text = f"📊 **Weekly Digest**\n\n{analysis}"
 
         await bot.send_message(
             chat_id=main_chat_id,

@@ -20,7 +20,7 @@
 
 ```bash
 # Скачайте установочный скрипт
-curl -O https://raw.githubusercontent.com/jbShanti/structme.weekly-digest.bot/main/install-bot.sh
+curl -O https://raw.githubusercontent.com/l3-lucky-l3/weekly_digest_bot/main/install-bot.sh
 chmod +x install-bot.sh
 
 # Запустите установку
@@ -53,8 +53,8 @@ docker-compose logs -f telegram-bot
 
 ```bash
 # 1. Клонирование репозитория
-git clone https://github.com/jbShanti/structme.weekly-digest.bot.git
-cd structme.weekly-digest.bot
+git clone https://github.com/l3-lucky-l3/weekly_digest_bot.git
+cd weekly_digest_bot
 
 # 2. Настройка окружения
 cp .env.example .env
@@ -139,7 +139,7 @@ docker-compose up -d
 ## 🏗️ Архитектура проекта
 
 ```
-structme.weekly-digest.bot/
+weekly_digest_bot/
 ├── data/                   # База данных (создается автоматически)
 │   └── database.db
 │

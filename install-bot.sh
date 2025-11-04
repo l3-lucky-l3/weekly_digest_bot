@@ -72,8 +72,8 @@ install_docker() {
 
 # Clone or update repository
 setup_repository() {
-    local repo_url="https://github.com/jbShanti/structme.weekly-digest.bot.git"
-    local target_dir="structme.weekly-digest.bot"
+    local repo_url="https://github.com/l3-lucky-l3/weekly_digest_bot.git"
+    local target_dir="weekly_digest_bot"
 
     if [ -d "$target_dir" ]; then
         log_info "Updating existing repository..."
@@ -217,12 +217,12 @@ main() {
 update_bot() {
     log_info "Updating Weekly Digest Bot..."
 
-    if [ ! -d "structme.weekly-digest.bot" ]; then
+    if [ ! -d "weekly_digest_bot" ]; then
         log_error "Bot directory not found. Run the installer first."
         exit 1
     fi
 
-    cd "structme.weekly-digest.bot"
+    cd "weekly_digest_bot"
 
     # Pull latest changes
     git pull origin main

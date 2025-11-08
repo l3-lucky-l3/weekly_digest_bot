@@ -13,6 +13,7 @@ from handlers.topics import register_topic_handlers
 from utils.filters import SourceTopicsFilter
 from services.posting_service import PostingService
 from services.html_parser import HTMLParserService
+from services.classification_service import ClassificationService
 
 
 # === КОНФИГУРАЦИЯ ===
@@ -46,6 +47,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 db = Database()
 ai_client = AIClient()
+classification_service = ClassificationService(db, ai_client)  # Новый сервис
 posting_service = PostingService(db, ai_client, MAIN_CHAT_ID, ADMIN_CHAT_ID)
 html_parser = HTMLParserService(db)
 
@@ -53,7 +55,7 @@ html_parser = HTMLParserService(db)
 # === РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ===
 def register_all_handlers():
     """Регистрирует все обработчики бота"""
-    register_command_handlers(dp, db, bot, ai_client, posting_service, html_parser)
+    register_command_handlers(dp, db, bot, ai_client, posting_service, html_parser, classification_service)
     register_topic_handlers(dp, db, MAIN_CHAT_ID)
 
     # Регистрация кастомного фильтра для топиков-источников
@@ -94,69 +96,6 @@ async def process_topic_message(message):
         logger.error(f"Error processing topic message: {e}")
 
 
-# === ТРЕХСТУПЕНЧАТАЯ КЛАССИФИКАЦИЯ ===
-async def process_unprocessed_messages():
-    """Обрабатывает необработанные сообщения трехступенчатым методом"""
-    try:
-        unprocessed_messages = db.get_unprocessed_messages()
-        if not unprocessed_messages:
-            return
-
-        active_threads = db.get_active_threads_with_messages(days=7)
-
-        for message in unprocessed_messages:
-            await three_step_classification(message, active_threads)
-
-    except Exception as e:
-        logger.error(f"Ошибка обработки необработанных сообщений: {e}")
-
-
-async def three_step_classification(message_data, active_threads):
-    """Трехступенчатый процесс классификации сообщения"""
-    try:
-        message_id = message_data['message_id']
-        message_text = message_data['message_text']
-
-        # Шаг 1: Проверка ответа/реплая
-        if message_data['parent_message_id']:
-            parent_thread = db.get_message_thread_by_parent(message_data['parent_message_id'])
-            if parent_thread:
-                db.update_message_thread(message_id, parent_thread['thread_id'], parent_thread['classification_id'])
-                logger.info(f"Сообщение {message_id} привязано к треду {parent_thread['thread_id']} (наследование)")
-                return
-
-        # Шаг 2: Семантический слинг
-        sling_result = await ai_client.semantic_sling_schema_c(message_text, active_threads)
-        if sling_result['related'] and sling_result['thread_id']:
-            thread = db.get_thread_by_id(sling_result['thread_id'])
-            if thread:
-                db.update_message_thread(message_id, sling_result['thread_id'], thread['classification_id'])
-                logger.info(
-                    f"Сообщение {message_id} привязано к треду {sling_result['thread_id']} (семантический слинг)")
-                return
-
-        # Шаг 3: Классификация новой сущности
-        classification_result = await ai_client.classify_message_schema_b(message_text)
-        if classification_result['classification'] in ['goal', 'blocker']:
-            thread_id = db.create_thread(
-                classification_result['title'] or message_text[:50],
-                classification_result['classification']
-            )
-            if thread_id > 0:
-                db.update_message_thread(message_id, thread_id, classification_result['classification'])
-                logger.info(
-                    f"Создан новый тред {thread_id} для сообщения {message_id} ({classification_result['classification']})")
-            else:
-                logger.error(f"Ошибка создания треда для сообщения {message_id}")
-        else:
-            # Помечаем как обработанное даже если не классифицировано
-            db.update_message_thread(message_id, None, 'other')
-            logger.info(f"Сообщение {message_id} помечено как 'other'")
-
-    except Exception as e:
-        logger.error(f"Ошибка трехступенчатой классификации для сообщения {message_data['message_id']}: {e}")
-
-
 # === ПЛАНИРОВЩИК ЗАДАЧ ===
 async def scheduled_posting():
     """Запускает периодическую проверку времени для постинга и обработки"""
@@ -175,7 +114,7 @@ async def scheduled_posting():
             # Обработка при первом запуске бота
             if not startup_processed:
                 logger.info("Первоначальная обработка накопленных сообщений...")
-                await process_unprocessed_messages()
+                await classification_service.process_unprocessed_messages()
                 startup_processed = True
                 logger.info("Первоначальная обработка завершена")
                 await asyncio.sleep(5)  # Короткая пауза перед продолжением
@@ -184,7 +123,7 @@ async def scheduled_posting():
             elif current_time == "02:00":
                 if last_message_processing_date != current_date:
                     logger.info("Запуск ежедневной обработки сообщений...")
-                    await process_unprocessed_messages()
+                    await classification_service.process_unprocessed_messages()  # Используем сервис
                     last_message_processing_date = current_date
                     logger.info("Ежедневная обработка сообщений завершена")
                     await asyncio.sleep(60)  # Защита от повторного запуска в ту же минуту
@@ -237,6 +176,11 @@ async def main():
 
     stats = ai_client.get_stats()
     logger.info(f"AI моделей: {stats['ai_models']}")
+
+    # Статистика классификации
+    classification_stats = classification_service.get_classification_stats()
+    if classification_stats:
+        logger.info(f"Статистика классификации: {classification_stats['processed']}/{classification_stats['total_messages']} обработано ({classification_stats['processing_rate']})")
 
     # Регистрируем все обработчики
     register_all_handlers()

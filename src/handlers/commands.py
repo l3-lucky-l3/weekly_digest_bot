@@ -534,7 +534,7 @@ async def cmd_parse_html(message: Message, state: FSMContext, html_parser, bot):
     await state.set_state(ParseHTMLStates.waiting_for_html_file)
 
 
-async def handle_html_file(message: Message, state: FSMContext, html_parser, bot):
+async def handle_html_file(message: Message, state: FSMContext, html_parser, bot, classification_service):
     """Обработчик получения HTML файла"""
     try:
         if not message.document:
@@ -573,8 +573,7 @@ async def handle_html_file(message: Message, state: FSMContext, html_parser, bot
                 f"💾 <b>Данные сохранены в базу</b>",
                 parse_mode="HTML"
             )
-            # TODO
-            # await process_unprocessed_messages()
+            await classification_service.process_unprocessed_messages()
         else:
             await message.answer(
                 f"❌ <b>Ошибка при парсинге:</b>\n{result['error']}",
@@ -595,7 +594,7 @@ async def cmd_cancel_parse(message: Message, state: FSMContext):
     await state.clear()
 
 
-def register_command_handlers(dp: Dispatcher, db, bot, ai_client, posting_service, html_parser):
+def register_command_handlers(dp: Dispatcher, db, bot, ai_client, posting_service, html_parser, classification_service):
     """Регистрирует обработчики команд"""
 
     # Создаем замыкания для обработчиков, которым нужны дополнительные параметры
@@ -639,7 +638,7 @@ def register_command_handlers(dp: Dispatcher, db, bot, ai_client, posting_servic
         await cmd_parse_html(message, state, html_parser, bot)
 
     async def wrapped_handle_html_file(message: Message, state: FSMContext):
-        await handle_html_file(message, state, html_parser, bot)
+        await handle_html_file(message, state, html_parser, bot, classification_service)
 
     # Регистрируем обработчики команд
     dp.message.register(cmd_start, Command("start"))

@@ -47,14 +47,16 @@ class HTMLParserService:
                 stats['error'] = "Не найдено сообщений в файле"
                 return stats
 
+            # Сначала собираем все сервисные сообщения о создании топиков
+            topic_creation_messages = self._extract_topic_creation_messages(messages)
+
             current_topic_id = None
             saved_count = 0
-            current_date = None
 
             for message in messages:
                 try:
                     # Определяем topic_id из структуры сообщения
-                    topic_id = self._extract_topic_id(message)
+                    topic_id = self._extract_topic_id(message, topic_creation_messages)
                     if topic_id:
                         current_topic_id = topic_id
                         stats['topics_found'].add(topic_id)
@@ -91,6 +93,65 @@ class HTMLParserService:
                 'processing_time': 0
             }
 
+    def _extract_topic_creation_messages(self, messages) -> dict:
+        """
+        Извлекает из сервисных сообщений информацию о создании топиков
+
+        Returns:
+            dict: {message_id: {'topic_name': str, 'created_at': datetime}}
+        """
+        topic_messages = {}
+
+        for message in messages:
+            if self._is_service_message(message):
+                topic_name = self._extract_topic_name_from_service_message(message)
+                if topic_name:
+                    message_id = self._extract_message_id(message)
+                    created_at = self._extract_message_datetime(message)
+                    topic_messages[message_id] = {
+                        'topic_name': topic_name,
+                        'created_at': created_at
+                    }
+                    logger.debug(
+                        f"Найдено сервисное сообщение о создании топика: {topic_name} (message_id: {message_id})")
+
+        return topic_messages
+
+    def _extract_topic_name_from_service_message(self, message) -> str:
+        """
+        Извлекает название топика из сервисного сообщения
+        """
+        try:
+            if not self._is_service_message(message):
+                return None
+
+            # Ищем текст сообщения
+            body = message.find('div', class_='body')
+            if body:
+                text = body.get_text(strip=True)
+                # Ищем паттерн создания топика
+                pattern = r'created topic\s+«([^»]+)»'
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    return match.group(1)
+
+                # Альтернативные паттерны
+                patterns = [
+                    r'создал\(а\)\s+топик\s+«([^»]+)»',
+                    r'topic\s+«([^»]+)»\s+created',
+                    r'топик\s+«([^»]+)»\s+создан'
+                ]
+
+                for pattern in patterns:
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match:
+                        return match.group(1)
+
+        except Exception as e:
+            logger.error(f"Ошибка извлечения названия топика из сервисного сообщения: {e}")
+
+        return None
+
     def _is_service_message(self, message) -> bool:
         """
         Проверяет, является ли сообщение сервисным
@@ -118,16 +179,37 @@ class HTMLParserService:
             logger.error(f"Ошибка извлечения времени сообщения: {e}")
             return None
 
-    def _extract_topic_id(self, message) -> int:
+    def _extract_topic_id(self, message, topic_creation_messages: dict) -> int:
         """
-        Извлекает ID топика из сообщения
+        Извлекает ID топика из сообщения, учитывая сервисные сообщения о создании топиков
         """
         try:
-            # Ищем ссылки на топики в сообщении
+            # Если это сервисное сообщение о создании топика - ищем topic_id по имени в БД
+            if self._is_service_message(message):
+                topic_name = self._extract_topic_name_from_service_message(message)
+                if topic_name:
+                    # Ищем topic_id в БД по имени топика
+                    source_topics = self.db.get_source_topics()
+                    for topic in source_topics:
+                        if topic['topic_name'] and topic_name.lower() in topic['topic_name'].lower():
+                            logger.debug(f"Найден topic_id {topic['topic_id']} для топика '{topic_name}'")
+                            return topic['topic_id']
+
+            # Для обычных сообщений проверяем, не является ли это ответом на сервисное сообщение о создании топика
+            parent_message_id = self._extract_parent_message_id(message)
+            if parent_message_id and parent_message_id in topic_creation_messages:
+                topic_name = topic_creation_messages[parent_message_id]['topic_name']
+                # Ищем topic_id в БД по имени топика
+                source_topics = self.db.get_source_topics()
+                for topic in source_topics:
+                    if topic['topic_name'] and topic_name.lower() in topic['topic_name'].lower():
+                        logger.debug(f"Найден topic_id {topic['topic_id']} для топика '{topic_name}' (через реплай)")
+                        return topic['topic_id']
+
+            # Стандартные методы поиска topic_id
             topic_links = message.find_all('a', href=True)
             for link in topic_links:
                 href = link.get('href', '')
-                # Ищем pattern топика в ссылке
                 topic_match = re.search(r'topic[_-]?(\d+)', href, re.IGNORECASE)
                 if topic_match:
                     return int(topic_match.group(1))
@@ -139,44 +221,41 @@ class HTMLParserService:
                 if topic_match:
                     return int(topic_match.group(1))
 
-            # Если топик не найден, используем ID из структуры сообщения
-            message_id = self._extract_message_id(message)
-            if message_id:
-                # Используем хэш от ID сообщения как topic_id для группировки
-                return hash(str(message_id)) % 1000000
-
-            return 1  # Дефолтный топик
+            return None
 
         except Exception as e:
             logger.error(f"Ошибка извлечения topic_id: {e}")
-            return 1
+            return None
 
     def _extract_message_id(self, message) -> int:
         """
         Извлекает ID сообщения
         """
         try:
-            # Ищем ID в атрибутах сообщения
             if message.get('id'):
                 id_match = re.search(r'message-?(\d+)', message.get('id', ''), re.IGNORECASE)
                 if id_match:
                     return int(id_match.group(1))
 
-            # Генерируем ID на основе содержания
-            text_content = message.get_text()
-            return hash(text_content) % 1000000000
-
         except Exception as e:
             logger.error(f"Ошибка извлечения message_id: {e}")
-            return hash(str(datetime.now())) % 1000000000
+            return 0
 
     def _parse_message(self, message, topic_id: int) -> dict:
         """
         Парсит отдельное сообщение
         """
         try:
+            # Пропускаем сервисные сообщения
+            if self._is_service_message(message):
+                return None
+
+            message_id = self._extract_message_id(message)
+            if not message_id:
+                return None
+
             message_data = {
-                'message_id': self._extract_message_id(message),
+                'message_id': message_id,
                 'topic_id': topic_id,
                 'message_text': '',
                 'thread_id': None,
@@ -187,7 +266,7 @@ class HTMLParserService:
 
             # Извлекаем текст сообщения
             message_text = self._extract_message_text(message)
-            if not message_text:
+            if not message_text and not self._is_service_message(message):
                 return None
 
             message_data['message_text'] = message_text
@@ -195,7 +274,6 @@ class HTMLParserService:
             # Извлекаем информацию о родительском сообщении (реплай)
             parent_message_id = self._extract_parent_message_id(message)
             if parent_message_id:
-                # Проверяем, что родитель НЕ является сервисным сообщением
                 if not self._is_parent_service_message(parent_message_id, message):
                     message_data['parent_message_id'] = parent_message_id
 
@@ -210,18 +288,15 @@ class HTMLParserService:
         Проверяет, является ли родительское сообщение сервисным
         """
         try:
-            # Ищем родительское сообщение в DOM
             parent_selector = f'div[id="message-{parent_message_id}"], div[id="message{parent_message_id}"]'
             parent_message = current_message.find_previous_sibling(parent_selector)
 
             if not parent_message:
-                # Если не нашли как предыдущего sibling, ищем по всему документу
                 soup = current_message.find_parent()
                 if soup:
                     parent_message = soup.find('div', id=re.compile(f'^message-?{parent_message_id}$'))
 
             if parent_message:
-                # Проверяем, является ли родитель сервисным сообщением
                 return self._is_service_message(parent_message)
 
             return False
@@ -235,7 +310,14 @@ class HTMLParserService:
         Извлекает текст сообщения
         """
         try:
-            # Ищем блок с текстом сообщения - конкретно div с классом "text"
+            # Для сервисных сообщений берем текст из body
+            if self._is_service_message(message):
+                body = message.find('div', class_='body')
+                if body:
+                    return body.get_text(strip=True)
+                return ''
+
+            # Для обычных сообщений ищем блок с текстом
             text_body = message.find('div', class_='text')
             if text_body:
                 text = text_body.get_text(strip=True)
@@ -253,10 +335,8 @@ class HTMLParserService:
         Извлекает ID родительского сообщения (для реплаев)
         """
         try:
-            # Ищем элементы реплая
             reply_elements = message.find_all(class_=re.compile(r'reply_to', re.IGNORECASE))
             for element in reply_elements:
-                # Ищем ссылки на сообщения
                 links = element.find_all('a', href=True)
                 for link in links:
                     href = link.get('href', '')
@@ -280,7 +360,6 @@ class HTMLParserService:
         if not text:
             return ''
 
-        # Удаляем лишние пробелы и переносы строк
         text = re.sub(r'\s+', ' ', text)
         text = text.strip()
 

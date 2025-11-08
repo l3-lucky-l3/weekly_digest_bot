@@ -46,7 +46,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 db = Database()
 ai_client = AIClient()
-posting_service = PostingService(db, ai_client, ADMIN_CHAT_ID)
+posting_service = PostingService(db, ai_client, MAIN_CHAT_ID, ADMIN_CHAT_ID)
 html_parser = HTMLParserService(db)
 
 
@@ -203,13 +203,13 @@ async def main():
     # Показываем конфигурацию при запуске
     source_topics = db.get_source_topics()
     conductor_topic = db.get_system_topic("conductor")
-    announcements_topic = db.get_system_topic("announcements")
+    digest_topic = db.get_system_topic("digest")
     recent_messages = db.get_messages_for_period(days=MESSAGE_RETENTION_DAYS)
 
     logger.info(f"Основной чат: {MAIN_CHAT_ID}")
     logger.info(f"Топиков-источников: {len(source_topics)}")
-    logger.info(f"Топик Conductor: {conductor_topic['topic_id'] if conductor_topic else 'Не настроен'}")
-    logger.info(f"Топик Анонсы: {announcements_topic['topic_id'] if announcements_topic else 'Не настроен'}")
+    logger.info(f"Топик Анонсы: {conductor_topic['topic_id'] if conductor_topic else 'Не настроен'}")
+    logger.info(f"Топик Дайджесты: {digest_topic['topic_id'] if digest_topic else 'Не настроен'}")
     logger.info(f"Сообщений в БД за {MESSAGE_RETENTION_DAYS} дней: {len(recent_messages)}")
 
     stats = ai_client.get_stats()

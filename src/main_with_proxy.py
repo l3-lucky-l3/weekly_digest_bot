@@ -205,8 +205,8 @@ async def create_monday_post(bot, db, ai_client, main_chat_id):
 async def create_friday_digest(bot, db, ai_client, main_chat_id):
     """Создает еженедельный дайджест (Пт 19:00)"""
     try:
-        announcements_topic = db.get_system_topic("announcements")
-        if not announcements_topic:
+        digest_topic = db.get_system_topic("digest")
+        if not digest_topic:
             logger.error("Топик Анонсы не настроен")
             return
 
@@ -228,7 +228,7 @@ async def create_friday_digest(bot, db, ai_client, main_chat_id):
 
         await bot.send_message(
             chat_id=main_chat_id,
-            message_thread_id=announcements_topic['topic_id'],
+            message_thread_id=digest_topic['topic_id'],
             text=post_text,
             parse_mode="HTML"
         )
@@ -285,13 +285,13 @@ async def main():
     # Показываем конфигурацию при запуске
     source_topics = db.get_source_topics()
     conductor_topic = db.get_system_topic("conductor")
-    announcements_topic = db.get_system_topic("announcements")
+    digest_topic = db.get_system_topic("digest")
     recent_messages = db.get_messages_for_period(days=MESSAGE_RETENTION_DAYS)
 
     logger.info(f"Основной чат: {MAIN_CHAT_ID}")
     logger.info(f"Топиков-источников: {len(source_topics)}")
     logger.info(f"Топик Conductor: {conductor_topic['topic_id'] if conductor_topic else 'Не настроен'}")
-    logger.info(f"Топик Анонсы: {announcements_topic['topic_id'] if announcements_topic else 'Не настроен'}")
+    logger.info(f"Топик Анонсы: {digest_topic['topic_id'] if digest_topic else 'Не настроен'}")
     logger.info(f"Сообщений в БД за {MESSAGE_RETENTION_DAYS} дней: {len(recent_messages)}")
 
     stats = ai_client.get_stats()

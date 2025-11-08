@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import logging
+from datetime import datetime
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -151,7 +152,7 @@ class Database:
     # === Методы для системных топиков ===
 
     def set_system_topic(self, topic_type: str, topic_id: int, topic_name: str = None) -> bool:
-        """Устанавливает системный топик (Conductor или Announcements)"""
+        """Устанавливает системный топик (announce или digest)"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -207,7 +208,7 @@ class Database:
                     message_data.get('parent_message_id'),
                     message_data.get('classification_id'),
                     message_data.get('message_text'),
-                    message_data.get('created_at'),
+                    message_data.get('created_at') or datetime.now(),
                     message_data.get('processed')
                 ))
                 conn.commit()
@@ -470,6 +471,23 @@ class Database:
                 return None
         except Exception as e:
             logger.error(f"Ошибка получения треда по родителю: {e}")
+            return None
+
+    def get_last_announcement(self):
+        """Получает последнее сообщение с classification_id = 'announce'"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT message_text FROM chat_messages 
+                    WHERE classification_id = 'announce' 
+                    ORDER BY created_at DESC 
+                    LIMIT 1
+                ''')
+                row = cursor.fetchone()
+                return row[0] if row else None
+        except Exception as e:
+            logger.error(f"Ошибка получения последнего анонса: {e}")
             return None
 
     # === Методы для работы с AI моделями ===

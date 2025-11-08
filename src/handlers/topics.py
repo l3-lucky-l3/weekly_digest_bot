@@ -120,7 +120,7 @@ async def cmd_select_conductor_topic(message: Message, db):
         await message.answer("❌ Ошибка при установке топика Conductor")
 
 
-async def cmd_select_announcements_topic(message: Message, db):
+async def cmd_select_digest_topic(message: Message, db):
     """Устанавливает текущий топик для публикации дайджеста (Пт)"""
     try:
         # Проверяем, что команда выполнена в топике форума
@@ -138,20 +138,20 @@ async def cmd_select_announcements_topic(message: Message, db):
 
         # Получаем название топика из reply_to_message если есть
         if not topic_name:
-            topic_name = "Анонсы"
+            topic_name = "Дайджест"
             if (message.reply_to_message and
                     hasattr(message.reply_to_message, 'forum_topic_created') and
                     message.reply_to_message.forum_topic_created):
                 topic_name = message.reply_to_message.forum_topic_created.name or "Анонсы"
 
-        if db.set_system_topic("announcements", topic_id, topic_name):
+        if db.set_system_topic("digest", topic_id, topic_name):
             response = f"✅ Топик Анонсы установлен:\nID: <code>{topic_id}</code>\nНазвание: {topic_name}"
             await message.answer(response, parse_mode="HTML")
         else:
             await message.answer("❌ Ошибка при установке топика Анонсы")
 
     except Exception as e:
-        logger.error(f"Error setting announcements topic: {e}")
+        logger.error(f"Error setting digest topic: {e}")
         await message.answer("❌ Ошибка при установке топика Анонсы")
 
 
@@ -163,7 +163,7 @@ async def cmd_show_config(message: Message, db, main_chat_id):
 
         # Получаем системные топики
         conductor_topic = db.get_system_topic("conductor")
-        announcements_topic = db.get_system_topic("announcements")
+        digest_topic = db.get_system_topic("digest")
 
         # Получаем статистику сообщений из БД
         recent_messages = db.get_messages_for_period(days=7)
@@ -184,17 +184,17 @@ async def cmd_show_config(message: Message, db, main_chat_id):
         response += "\n📤 <b>Системные топики:</b>\n"
 
         if conductor_topic:
-            response += f"• Conductor (Пн): ID <code>{conductor_topic['topic_id']}</code>"
+            response += f"• Анонсы (Пн): ID <code>{conductor_topic['topic_id']}</code>"
             if conductor_topic['topic_name']:
                 response += f" - {conductor_topic['topic_name']}"
             response += "\n"
         else:
-            response += "• Conductor (Пн): ❌ Не настроен\n"
+            response += "• Дайджесты (Пн): ❌ Не настроен\n"
 
-        if announcements_topic:
-            response += f"• Анонсы (Пт): ID <code>{announcements_topic['topic_id']}</code>"
-            if announcements_topic['topic_name']:
-                response += f" - {announcements_topic['topic_name']}"
+        if digest_topic:
+            response += f"• Анонсы (Пт): ID <code>{digest_topic['topic_id']}</code>"
+            if digest_topic['topic_name']:
+                response += f" - {digest_topic['topic_name']}"
             response += "\n"
         else:
             response += "• Анонсы (Пт): ❌ Не настроен\n"
@@ -231,13 +231,13 @@ def register_topic_handlers(dp: Dispatcher, db, main_chat_id):
     async def wrapped_select_conductor_topic(message: Message):
         await cmd_select_conductor_topic(message, db)
 
-    async def wrapped_select_announcements_topic(message: Message):
-        await cmd_select_announcements_topic(message, db)
+    async def wrapped_select_digest_topic(message: Message):
+        await cmd_select_digest_topic(message, db)
 
     # Регистрируем обработчики
     dp.message.register(wrapped_add_topic, Command("addtopic"))
     dp.message.register(wrapped_delete_topic, Command("deletetopic"))
     dp.message.register(wrapped_list_topics, Command("listtopics"))
     dp.message.register(wrapped_select_conductor_topic, Command("selectconductortopic"))
-    dp.message.register(wrapped_select_announcements_topic, Command("selectanouncestopic"))
+    dp.message.register(wrapped_select_digest_topic, Command("selectdigesttopic"))
     dp.message.register(wrapped_show_config, Command("showconfig"))

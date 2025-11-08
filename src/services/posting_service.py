@@ -113,7 +113,7 @@ class PostingService:
                 'message_text': post_text,
                 'thread_id': None,
                 'parent_message_id': None,
-                'classification_id': "announce",
+                'classification_id': "digest",
                 'processed': True
             })
 

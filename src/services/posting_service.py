@@ -6,11 +6,9 @@ logger = logging.getLogger(__name__)
 
 
 class PostingService:
-    def __init__(self, db, ai_client, main_chat_id, admin_chat_id):
+    def __init__(self, db, ai_client, admin_chat_id):
         self.db = db
         self.ai_client = ai_client
-        # TODO del?
-        self.main_chat_id = main_chat_id
         self.admin_chat_id = admin_chat_id
 
     async def create_monday_post(self, bot):
@@ -100,12 +98,30 @@ class PostingService:
 
             post_text = await self.ai_client.send_request(full_prompt)
 
-            # TODO
+            # Сначала сохраняем сообщение в БД
+            message_obj_id = self.db.save_message({
+                'message_id': None,
+                'topic_id': announcements_topic['topic_id'],
+                'message_text': post_text,
+                'thread_id': None,
+                'parent_message_id': None,
+                'classification_id': "conductor",
+                'processed': True
+            })
+
+            markup = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text="✅ Опубликовать", callback_data=f"publish_post:{message_obj_id}"),
+                        InlineKeyboardButton(text="❌ Редактировать", callback_data=f"edit_post:{message_obj_id}")
+                    ]
+                ]
+            )
+
             await bot.send_message(
                 chat_id=self.admin_chat_id,
-                message_thread_id=announcements_topic['topic_id'],
                 text=post_text,
-                parse_mode="HTML"
+                reply_markup=markup
             )
 
             logger.info("Пятничный дайджест опубликован")

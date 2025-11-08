@@ -46,7 +46,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 db = Database()
 ai_client = AIClient()
-posting_service = PostingService(db, ai_client, MAIN_CHAT_ID, ADMIN_CHAT_ID)
+posting_service = PostingService(db, ai_client, ADMIN_CHAT_ID)
 html_parser = HTMLParserService(db)
 
 

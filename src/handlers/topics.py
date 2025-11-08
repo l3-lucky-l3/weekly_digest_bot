@@ -64,28 +64,7 @@ async def cmd_delete_topic(message: Message, db):
         await message.answer("❌ Ошибка при удалении топика")
 
 
-async def cmd_list_topics(message: Message, db):
-    """Показывает список топиков-источников"""
-    try:
-        topics = db.get_source_topics()
-        if not topics:
-            await message.answer("📋 Нет добавленных топиков-источников")
-            return
-
-        topics_list = "\n".join([
-            f"• ID: <code>{topic['topic_id']}</code>" +
-            (f" - {topic['topic_name']}" if topic['topic_name'] else "")
-            for topic in topics
-        ])
-
-        await message.answer(f"📋 Топики-источники:\n{topics_list}", parse_mode="HTML")
-
-    except Exception as e:
-        logger.error(f"Error listing topics: {e}")
-        await message.answer("❌ Ошибка при получении списка топиков")
-
-
-async def cmd_select_conductor_topic(message: Message, db):
+async def cmd_select_announce_topic(message: Message, db):
     """Устанавливает текущий топик для публикации целей/блокеров (Пн)"""
     try:
         # Проверяем, что команда выполнена в топике форума
@@ -103,21 +82,21 @@ async def cmd_select_conductor_topic(message: Message, db):
 
         # Получаем название топика из reply_to_message если есть
         if not topic_name:
-            topic_name = "Conductor"
+            topic_name = "announce"
             if (message.reply_to_message and
                     hasattr(message.reply_to_message, 'forum_topic_created') and
                     message.reply_to_message.forum_topic_created):
-                topic_name = message.reply_to_message.forum_topic_created.name or "Conductor"
+                topic_name = message.reply_to_message.forum_topic_created.name or "announce"
 
-        if db.set_system_topic("conductor", topic_id, topic_name):
-            response = f"✅ Топик Conductor установлен:\nID: <code>{topic_id}</code>\nНазвание: {topic_name}"
+        if db.set_system_topic("announce", topic_id, topic_name):
+            response = f"✅ Топик announce установлен:\nID: <code>{topic_id}</code>\nНазвание: {topic_name}"
             await message.answer(response, parse_mode="HTML")
         else:
-            await message.answer("❌ Ошибка при установке топик Conductor")
+            await message.answer("❌ Ошибка при установке топик announce")
 
     except Exception as e:
-        logger.error(f"Error setting conductor topic: {e}")
-        await message.answer("❌ Ошибка при установке топика Conductor")
+        logger.error(f"Error setting announce topic: {e}")
+        await message.answer("❌ Ошибка при установке топика announce")
 
 
 async def cmd_select_digest_topic(message: Message, db):
@@ -145,7 +124,7 @@ async def cmd_select_digest_topic(message: Message, db):
                 topic_name = message.reply_to_message.forum_topic_created.name or "Анонсы"
 
         if db.set_system_topic("digest", topic_id, topic_name):
-            response = f"✅ Топик Анонсы установлен:\nID: <code>{topic_id}</code>\nНазвание: {topic_name}"
+            response = f"✅ Топик Digest установлен:\nID: <code>{topic_id}</code>\nНазвание: {topic_name}"
             await message.answer(response, parse_mode="HTML")
         else:
             await message.answer("❌ Ошибка при установке топика Анонсы")
@@ -162,7 +141,7 @@ async def cmd_show_config(message: Message, db, main_chat_id):
         source_topics = db.get_source_topics()
 
         # Получаем системные топики
-        conductor_topic = db.get_system_topic("conductor")
+        announce_topic = db.get_system_topic("announce")
         digest_topic = db.get_system_topic("digest")
 
         # Получаем статистику сообщений из БД
@@ -183,10 +162,10 @@ async def cmd_show_config(message: Message, db, main_chat_id):
 
         response += "\n📤 <b>Системные топики:</b>\n"
 
-        if conductor_topic:
-            response += f"• Анонсы (Пн): ID <code>{conductor_topic['topic_id']}</code>"
-            if conductor_topic['topic_name']:
-                response += f" - {conductor_topic['topic_name']}"
+        if announce_topic:
+            response += f"• Анонсы (Пн): ID <code>{announce_topic['topic_id']}</code>"
+            if announce_topic['topic_name']:
+                response += f" - {announce_topic['topic_name']}"
             response += "\n"
         else:
             response += "• Дайджесты (Пн): ❌ Не настроен\n"
@@ -225,11 +204,8 @@ def register_topic_handlers(dp: Dispatcher, db, main_chat_id):
     async def wrapped_delete_topic(message: Message):
         await cmd_delete_topic(message, db)
 
-    async def wrapped_list_topics(message: Message):
-        await cmd_list_topics(message, db)
-
-    async def wrapped_select_conductor_topic(message: Message):
-        await cmd_select_conductor_topic(message, db)
+    async def wrapped_select_announce_topic(message: Message):
+        await cmd_select_announce_topic(message, db)
 
     async def wrapped_select_digest_topic(message: Message):
         await cmd_select_digest_topic(message, db)
@@ -237,7 +213,6 @@ def register_topic_handlers(dp: Dispatcher, db, main_chat_id):
     # Регистрируем обработчики
     dp.message.register(wrapped_add_topic, Command("addtopic"))
     dp.message.register(wrapped_delete_topic, Command("deletetopic"))
-    dp.message.register(wrapped_list_topics, Command("listtopics"))
-    dp.message.register(wrapped_select_conductor_topic, Command("selectconductortopic"))
-    dp.message.register(wrapped_select_digest_topic, Command("selectdigesttopic"))
+    dp.message.register(wrapped_select_announce_topic, Command("select_announce_topic"))
+    dp.message.register(wrapped_select_digest_topic, Command("select_digest_topic"))
     dp.message.register(wrapped_show_config, Command("showconfig"))

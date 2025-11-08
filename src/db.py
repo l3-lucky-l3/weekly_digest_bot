@@ -209,7 +209,7 @@ class Database:
                     message_data.get('classification_id'),
                     message_data.get('message_text'),
                     message_data.get('created_at') or datetime.now(),
-                    message_data.get('processed')
+                    message_data.get('processed') or False
                 ))
                 conn.commit()
                 return cursor.lastrowid

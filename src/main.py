@@ -160,35 +160,58 @@ async def three_step_classification(message_data, active_threads):
 # === ПЛАНИРОВЩИК ЗАДАЧ ===
 async def scheduled_posting():
     """Запускает периодическую проверку времени для постинга и обработки"""
+    # Переменные для отслеживания выполнения ежедневных задач
+    last_message_processing_date = None
+    last_cleanup_date = None
+    startup_processed = False  # Флаг для обработки при запуске
+
     while True:
         try:
             now = datetime.now()
+            current_date = now.date()  # Текущая дата без времени
             current_time = now.strftime("%H:%M")
             weekday = now.strftime("%A")
 
-            # Каждые 5 минут обрабатываем необработанные сообщения
-            if current_time.endswith(
-                    (':00', ':05', ':10', ':15', ':20', ':25', ':30', ':35', ':40', ':45', ':50', ':55')):
+            # Обработка при первом запуске бота
+            if not startup_processed:
+                logger.info("Первоначальная обработка накопленных сообщений...")
                 await process_unprocessed_messages()
+                startup_processed = True
+                logger.info("Первоначальная обработка завершена")
+                await asyncio.sleep(5)  # Короткая пауза перед продолжением
+
+            # Обработка необработанных сообщений - раз в сутки в 02:00
+            elif current_time == "02:00":
+                if last_message_processing_date != current_date:
+                    logger.info("Запуск ежедневной обработки сообщений...")
+                    await process_unprocessed_messages()
+                    last_message_processing_date = current_date
+                    logger.info("Ежедневная обработка сообщений завершена")
+                    await asyncio.sleep(60)  # Защита от повторного запуска в ту же минуту
 
             # Понедельник 10:00 - цели/блокеры
-            if weekday == "Monday" and current_time == "10:00":
+            elif weekday == "Monday" and current_time == "10:00":
+                logger.info("Запуск создания понедельничного поста...")
                 await posting_service.create_monday_post(bot)
                 await asyncio.sleep(60)
 
             # Пятница 19:00 - Weekly Digest
             elif weekday == "Friday" and current_time == "19:00":
+                logger.info("Запуск создания пятничного дайджеста...")
                 await posting_service.create_friday_digest(bot)
                 await asyncio.sleep(60)
 
             # Ежедневная очистка в 03:00
             elif current_time == "03:00":
-                deleted_count = db.cleanup_old_messages(days=MESSAGE_RETENTION_DAYS)
-                if deleted_count > 0:
-                    logger.info(f"Автоочистка БД: удалено {deleted_count} старых сообщений")
-                await asyncio.sleep(60)
+                if last_cleanup_date != current_date:
+                    logger.info("Запуск ежедневной очистки БД...")
+                    deleted_count = db.cleanup_old_messages(days=MESSAGE_RETENTION_DAYS)
+                    if deleted_count > 0:
+                        logger.info(f"Автоочистка БД: удалено {deleted_count} старых сообщений")
+                    last_cleanup_date = current_date
+                    await asyncio.sleep(60)
 
-            await asyncio.sleep(30)
+            await asyncio.sleep(30)  # Проверяем каждые 30 секунд
 
         except Exception as e:
             logger.error(f"Error in scheduled posting: {e}")

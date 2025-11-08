@@ -14,12 +14,6 @@ class HTMLParserService:
     async def parse_html_file(self, file_path: str) -> dict:
         """
         Парсит HTML файл с историей чата Telegram и сохраняет сообщения в БД
-
-        Args:
-            file_path: путь к HTML файлу
-
-        Returns:
-            dict: результат парсинга
         """
         try:
             start_time = datetime.now()
@@ -47,7 +41,7 @@ class HTMLParserService:
                 stats['error'] = "Не найдено сообщений в файле"
                 return stats
 
-            # Сначала собираем все сервисные сообщения о создании топиков
+            # Сначала собираем все сервисные сообщения о создании и переименовании топиков
             topic_creation_messages = self._extract_topic_creation_messages(messages)
 
             current_topic_id = None
@@ -95,27 +89,138 @@ class HTMLParserService:
 
     def _extract_topic_creation_messages(self, messages) -> dict:
         """
-        Извлекает из сервисных сообщений информацию о создании топиков
+        Извлекает из сервисных сообщений информацию о создании и переименовании топиков
 
         Returns:
-            dict: {message_id: {'topic_name': str, 'created_at': datetime}}
+            dict: {message_id: {'topic_name': str, 'created_at': datetime, 'type': 'creation'|'rename'}}
         """
         topic_messages = {}
 
         for message in messages:
             if self._is_service_message(message):
+                # Пытаемся извлечь информацию о создании топика
                 topic_name = self._extract_topic_name_from_service_message(message)
-                if topic_name:
+                created_at = self._extract_message_datetime(message)
+
+                if topic_name and created_at:
                     message_id = self._extract_message_id(message)
-                    created_at = self._extract_message_datetime(message)
-                    topic_messages[message_id] = {
-                        'topic_name': topic_name,
-                        'created_at': created_at
-                    }
-                    logger.debug(
-                        f"Найдено сервисное сообщение о создании топика: {topic_name} (message_id: {message_id})")
+                    if message_id:
+                        topic_messages[message_id] = {
+                            'topic_name': topic_name,
+                            'created_at': created_at,
+                            'type': 'creation'
+                        }
+                        logger.debug(
+                            f"Найдено сервисное сообщение о создании топика: {topic_name} (message_id: {message_id})")
+
+                # Пытаемся извлечь информацию о переименовании топика
+                renamed_topic_name = self._extract_renamed_topic_name_from_service_message(message)
+                if renamed_topic_name and created_at:
+                    message_id = self._extract_message_id(message)
+                    if message_id:
+                        # Если уже есть запись о создании, обновляем её
+                        if message_id in topic_messages:
+                            topic_messages[message_id]['topic_name'] = renamed_topic_name
+                            topic_messages[message_id]['type'] = 'rename'
+                        else:
+                            topic_messages[message_id] = {
+                                'topic_name': renamed_topic_name,
+                                'created_at': created_at,
+                                'type': 'rename'
+                            }
+                        logger.debug(
+                            f"Найдено сервисное сообщение о переименовании топика: {renamed_topic_name} (message_id: {message_id})")
 
         return topic_messages
+
+    def _extract_renamed_topic_name_from_service_message(self, message) -> str:
+        """
+        Извлекает новое название топика из сервисного сообщения о переименовании
+        """
+        try:
+            if not self._is_service_message(message):
+                return None
+
+            # Ищем текст сообщения
+            body = message.find('div', class_='body')
+            if body:
+                text = body.get_text(strip=True)
+                # Ищем паттерн переименования топика
+                pattern = r'changed topic title to\s+«([^»]+)»'
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    return match.group(1)
+
+                # Альтернативные паттерны для переименования
+                patterns = [
+                    r'изменил\(а\)\s+название\s+топика\s+на\s+«([^»]+)»',
+                    r'переименовал\(а\)\s+топик\s+в\s+«([^»]+)»',
+                    r'topic title changed to\s+«([^»]+)»',
+                    r'название\s+топика\s+изменено\s+на\s+«([^»]+)»'
+                ]
+
+                for pattern in patterns:
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match:
+                        return match.group(1)
+
+        except Exception as e:
+            logger.error(f"Ошибка извлечения нового названия топика из сервисного сообщения: {e}")
+
+        return None
+
+    def _extract_topic_id(self, message, topic_creation_messages: dict) -> int:
+        """
+        Извлекает ID топика из сообщения, учитывая сервисные сообщения о создании и переименовании топиков
+        """
+        try:
+            # Если это сервисное сообщение о создании или переименовании топика - ищем topic_id по имени в БД
+            if self._is_service_message(message):
+                topic_name = self._extract_topic_name_from_service_message(message)
+                renamed_topic_name = self._extract_renamed_topic_name_from_service_message(message)
+
+                # Используем новое название если топик переименован
+                target_topic_name = renamed_topic_name if renamed_topic_name else topic_name
+
+                if target_topic_name:
+                    # Ищем topic_id в БД по имени топика
+                    source_topics = self.db.get_source_topics()
+                    for topic in source_topics:
+                        if topic['topic_name'] and target_topic_name.lower() in topic['topic_name'].lower():
+                            logger.debug(f"Найден topic_id {topic['topic_id']} для топика '{target_topic_name}'")
+                            return topic['topic_id']
+
+            # Для обычных сообщений проверяем, не является ли это ответом на сервисное сообщение о создании/переименовании топика
+            parent_message_id = self._extract_parent_message_id(message)
+            if parent_message_id and parent_message_id in topic_creation_messages:
+                topic_name = topic_creation_messages[parent_message_id]['topic_name']
+                # Ищем topic_id в БД по имени топика
+                source_topics = self.db.get_source_topics()
+                for topic in source_topics:
+                    if topic['topic_name'] and topic_name.lower() in topic['topic_name'].lower():
+                        logger.debug(f"Найден topic_id {topic['topic_id']} для топика '{topic_name}' (через реплай)")
+                        return topic['topic_id']
+
+            # Стандартные методы поиска topic_id
+            topic_links = message.find_all('a', href=True)
+            for link in topic_links:
+                href = link.get('href', '')
+                topic_match = re.search(r'topic[_-]?(\d+)', href, re.IGNORECASE)
+                if topic_match:
+                    return int(topic_match.group(1))
+
+            # Ищем в тексте сообщения упоминания топиков
+            text_elements = message.find_all(text=True)
+            for text in text_elements:
+                topic_match = re.search(r'топик[_\s]*(\d+)', text, re.IGNORECASE)
+                if topic_match:
+                    return int(topic_match.group(1))
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Ошибка извлечения topic_id: {e}")
+            return None
 
     def _extract_topic_name_from_service_message(self, message) -> str:
         """
@@ -172,59 +277,12 @@ class HTMLParserService:
             time_element = message.find('div', class_='date')
             if time_element:
                 time_text = time_element.get('title', '')
-                result_date = datetime.strptime(time_text, "%d.%m.%Y %H:%M:%S UTC+03:00")
-                return result_date
+                if time_text:
+                    result_date = datetime.strptime(time_text, "%d.%m.%Y %H:%M:%S UTC+03:00")
+                    return result_date
 
         except Exception as e:
             logger.error(f"Ошибка извлечения времени сообщения: {e}")
-            return None
-
-    def _extract_topic_id(self, message, topic_creation_messages: dict) -> int:
-        """
-        Извлекает ID топика из сообщения, учитывая сервисные сообщения о создании топиков
-        """
-        try:
-            # Если это сервисное сообщение о создании топика - ищем topic_id по имени в БД
-            if self._is_service_message(message):
-                topic_name = self._extract_topic_name_from_service_message(message)
-                if topic_name:
-                    # Ищем topic_id в БД по имени топика
-                    source_topics = self.db.get_source_topics()
-                    for topic in source_topics:
-                        if topic['topic_name'] and topic_name.lower() in topic['topic_name'].lower():
-                            logger.debug(f"Найден topic_id {topic['topic_id']} для топика '{topic_name}'")
-                            return topic['topic_id']
-
-            # Для обычных сообщений проверяем, не является ли это ответом на сервисное сообщение о создании топика
-            parent_message_id = self._extract_parent_message_id(message)
-            if parent_message_id and parent_message_id in topic_creation_messages:
-                topic_name = topic_creation_messages[parent_message_id]['topic_name']
-                # Ищем topic_id в БД по имени топика
-                source_topics = self.db.get_source_topics()
-                for topic in source_topics:
-                    if topic['topic_name'] and topic_name.lower() in topic['topic_name'].lower():
-                        logger.debug(f"Найден topic_id {topic['topic_id']} для топика '{topic_name}' (через реплай)")
-                        return topic['topic_id']
-
-            # Стандартные методы поиска topic_id
-            topic_links = message.find_all('a', href=True)
-            for link in topic_links:
-                href = link.get('href', '')
-                topic_match = re.search(r'topic[_-]?(\d+)', href, re.IGNORECASE)
-                if topic_match:
-                    return int(topic_match.group(1))
-
-            # Ищем в тексте сообщения упоминания топиков
-            text_elements = message.find_all(text=True)
-            for text in text_elements:
-                topic_match = re.search(r'топик[_\s]*(\d+)', text, re.IGNORECASE)
-                if topic_match:
-                    return int(topic_match.group(1))
-
-            return None
-
-        except Exception as e:
-            logger.error(f"Ошибка извлечения topic_id: {e}")
             return None
 
     def _extract_message_id(self, message) -> int:
@@ -254,6 +312,11 @@ class HTMLParserService:
             if not message_id:
                 return None
 
+            created_at = self._extract_message_datetime(message)
+            if not created_at:
+                logger.warning(f"Не удалось извлечь дату для сообщения {message_id}")
+                return None
+
             message_data = {
                 'message_id': message_id,
                 'topic_id': topic_id,
@@ -261,12 +324,12 @@ class HTMLParserService:
                 'thread_id': None,
                 'parent_message_id': None,
                 'classification_id': None,
-                'created_at': self._extract_message_datetime(message)
+                'created_at': created_at
             }
 
             # Извлекаем текст сообщения
             message_text = self._extract_message_text(message)
-            if not message_text and not self._is_service_message(message):
+            if not message_text:
                 return None
 
             message_data['message_text'] = message_text
@@ -310,13 +373,6 @@ class HTMLParserService:
         Извлекает текст сообщения
         """
         try:
-            # Для сервисных сообщений берем текст из body
-            if self._is_service_message(message):
-                body = message.find('div', class_='body')
-                if body:
-                    return body.get_text(strip=True)
-                return ''
-
             # Для обычных сообщений ищем блок с текстом
             text_body = message.find('div', class_='text')
             if text_body:
@@ -360,6 +416,7 @@ class HTMLParserService:
         if not text:
             return ''
 
+        # Удаляем лишние пробелы и переносы строк
         text = re.sub(r'\s+', ' ', text)
         text = text.strip()
 

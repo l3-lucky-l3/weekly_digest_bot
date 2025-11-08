@@ -1,17 +1,18 @@
 # services/html_parser.py
 import logging
 from datetime import datetime
-from bs4 import BeautifulSoup
+from typing import Dict, Optional, Any, List
+from bs4 import BeautifulSoup, Tag
 import re
 
 logger = logging.getLogger(__name__)
 
 
 class HTMLParserService:
-    def __init__(self, db):
+    def __init__(self, db) -> None:
         self.db = db
 
-    async def parse_html_file(self, file_path: str) -> dict:
+    async def parse_html_file(self, file_path: str) -> Dict[str, Any]:
         """
         Парсит HTML файл с историей чата Telegram и сохраняет сообщения в БД
         """
@@ -24,7 +25,7 @@ class HTMLParserService:
             soup = BeautifulSoup(html_content, 'html.parser')
 
             # Собираем статистику
-            stats = {
+            stats: Dict[str, Any] = {
                 'total_messages': 0,
                 'saved_messages': 0,
                 'topics_found': set(),
@@ -44,7 +45,7 @@ class HTMLParserService:
             # Сначала собираем все сервисные сообщения о создании и переименовании топиков
             topic_creation_messages = self._extract_topic_creation_messages(messages)
 
-            current_topic_id = None
+            current_topic_id: Optional[int] = None
             saved_count = 0
 
             for message in messages:
@@ -62,7 +63,9 @@ class HTMLParserService:
                         if self.db.save_message(message_data):
                             saved_count += 1
                             logger.debug(
-                                f"Сообщение сохранено: {message_data['message_text'][:50]}... (дата: {message_data['created_at']})")
+                                f"Сообщение сохранено: {message_data['message_text'][:50]}... "
+                                f"(дата: {message_data['created_at']})"
+                            )
 
                 except Exception as e:
                     logger.error(f"Ошибка парсинга сообщения: {e}")
@@ -87,14 +90,14 @@ class HTMLParserService:
                 'processing_time': 0
             }
 
-    def _extract_topic_creation_messages(self, messages) -> dict:
+    def _extract_topic_creation_messages(self, messages: List[Tag]) -> Dict[int, Dict[str, Any]]:
         """
         Извлекает из сервисных сообщений информацию о создании и переименовании топиков
 
         Returns:
             dict: {message_id: {'topic_name': str, 'created_at': datetime, 'type': 'creation'|'rename'}}
         """
-        topic_messages = {}
+        topic_messages: Dict[int, Dict[str, Any]] = {}
 
         for message in messages:
             if self._is_service_message(message):
@@ -111,7 +114,9 @@ class HTMLParserService:
                             'type': 'creation'
                         }
                         logger.debug(
-                            f"Найдено сервисное сообщение о создании топика: {topic_name} (message_id: {message_id})")
+                            f"Найдено сервисное сообщение о создании топика: {topic_name} "
+                            f"(message_id: {message_id})"
+                        )
 
                 # Пытаемся извлечь информацию о переименовании топика
                 renamed_topic_name = self._extract_renamed_topic_name_from_service_message(message)
@@ -129,11 +134,13 @@ class HTMLParserService:
                                 'type': 'rename'
                             }
                         logger.debug(
-                            f"Найдено сервисное сообщение о переименовании топика: {renamed_topic_name} (message_id: {message_id})")
+                            f"Найдено сервисное сообщение о переименовании топика: {renamed_topic_name} "
+                            f"(message_id: {message_id})"
+                        )
 
         return topic_messages
 
-    def _extract_renamed_topic_name_from_service_message(self, message) -> str:
+    def _extract_renamed_topic_name_from_service_message(self, message: Tag) -> Optional[str]:
         """
         Извлекает новое название топика из сервисного сообщения о переименовании
         """
@@ -146,8 +153,8 @@ class HTMLParserService:
             if body:
                 text = body.get_text(strip=True)
                 # Ищем паттерн переименования топика
-                pattern = r'changed topic title to\s+«([^»]+)»'
-                match = re.search(pattern, text, re.IGNORECASE)
+                pattern_str = r'changed topic title to\s+«([^»]+)»'
+                match = re.search(pattern_str, text, re.IGNORECASE)
                 if match:
                     return match.group(1)
 
@@ -169,7 +176,7 @@ class HTMLParserService:
 
         return None
 
-    def _extract_topic_id(self, message, topic_creation_messages: dict) -> int:
+    def _extract_topic_id(self, message: Tag, topic_creation_messages: Dict[int, Dict[str, Any]]) -> Optional[int]:
         """
         Извлекает ID топика из сообщения, учитывая сервисные сообщения о создании и переименовании топиков
         """
@@ -190,7 +197,7 @@ class HTMLParserService:
                             logger.debug(f"Найден topic_id {topic['topic_id']} для топика '{target_topic_name}'")
                             return topic['topic_id']
 
-            # Для обычных сообщений проверяем, не является ли это ответом на сервисное сообщение о создании/переименовании топика
+            # Для обычных сообщений проверяем, не является ли это ответом на сервисное сообщение
             parent_message_id = self._extract_parent_message_id(message)
             if parent_message_id and parent_message_id in topic_creation_messages:
                 topic_name = topic_creation_messages[parent_message_id]['topic_name']
@@ -222,7 +229,7 @@ class HTMLParserService:
             logger.error(f"Ошибка извлечения topic_id: {e}")
             return None
 
-    def _extract_topic_name_from_service_message(self, message) -> str:
+    def _extract_topic_name_from_service_message(self, message: Tag) -> Optional[str]:
         """
         Извлекает название топика из сервисного сообщения
         """
@@ -235,8 +242,8 @@ class HTMLParserService:
             if body:
                 text = body.get_text(strip=True)
                 # Ищем паттерн создания топика
-                pattern = r'created topic\s+«([^»]+)»'
-                match = re.search(pattern, text, re.IGNORECASE)
+                pattern_str = r'created topic\s+«([^»]+)»'
+                match = re.search(pattern_str, text, re.IGNORECASE)
                 if match:
                     return match.group(1)
 
@@ -257,18 +264,22 @@ class HTMLParserService:
 
         return None
 
-    def _is_service_message(self, message) -> bool:
+    @staticmethod
+    def _is_service_message(message: Tag) -> bool:
         """
         Проверяет, является ли сообщение сервисным
         """
         try:
             classes = message.get('class', [])
-            return 'message' in classes and 'service' in classes
+            if isinstance(classes, list):
+                return 'message' in classes and 'service' in classes
+            return False
         except Exception as e:
             logger.error(f"Ошибка проверки сервисного сообщения: {e}")
             return False
 
-    def _extract_message_datetime(self, message):
+    @staticmethod
+    def _extract_message_datetime(message: Tag) -> Optional[datetime]:
         """
         Извлекает дату и время из сообщения
         """
@@ -285,13 +296,15 @@ class HTMLParserService:
             logger.error(f"Ошибка извлечения времени сообщения: {e}")
             return None
 
-    def _extract_message_id(self, message) -> int:
+    @staticmethod
+    def _extract_message_id(message: Tag) -> int:
         """
         Извлекает ID сообщения
         """
         try:
-            if message.get('id'):
-                id_match = re.search(r'message-?(\d+)', message.get('id', ''), re.IGNORECASE)
+            message_id = message.get('id')
+            if message_id:
+                id_match = re.search(r'message-?(\d+)', message_id, re.IGNORECASE)
                 if id_match:
                     return int(id_match.group(1))
 
@@ -299,7 +312,7 @@ class HTMLParserService:
             logger.error(f"Ошибка извлечения message_id: {e}")
             return 0
 
-    def _parse_message(self, message, topic_id: int) -> dict:
+    def _parse_message(self, message: Tag, topic_id: Optional[int]) -> Optional[Dict[str, Any]]:
         """
         Парсит отдельное сообщение
         """
@@ -317,7 +330,7 @@ class HTMLParserService:
                 logger.warning(f"Не удалось извлечь дату для сообщения {message_id}")
                 return None
 
-            message_data = {
+            message_data: Dict[str, Any] = {
                 'message_id': message_id,
                 'topic_id': topic_id,
                 'message_text': '',
@@ -346,7 +359,7 @@ class HTMLParserService:
             logger.error(f"Ошибка парсинга сообщения: {e}")
             return None
 
-    def _is_parent_service_message(self, parent_message_id: int, current_message) -> bool:
+    def _is_parent_service_message(self, parent_message_id: int, current_message: Tag) -> bool:
         """
         Проверяет, является ли родительское сообщение сервисным
         """
@@ -368,7 +381,7 @@ class HTMLParserService:
             logger.error(f"Ошибка проверки сервисного родителя: {e}")
             return False
 
-    def _extract_message_text(self, message) -> str:
+    def _extract_message_text(self, message: Tag) -> str:
         """
         Извлекает текст сообщения
         """
@@ -386,7 +399,8 @@ class HTMLParserService:
             logger.error(f"Ошибка извлечения текста сообщения: {e}")
             return ''
 
-    def _extract_parent_message_id(self, message) -> int:
+    @staticmethod
+    def _extract_parent_message_id(message: Tag) -> Optional[int]:
         """
         Извлекает ID родительского сообщения (для реплаев)
         """
@@ -409,7 +423,8 @@ class HTMLParserService:
             logger.error(f"Ошибка извлечения parent_message_id: {e}")
             return None
 
-    def _clean_text(self, text: str) -> str:
+    @staticmethod
+    def _clean_text(text: str) -> str:
         """
         Обрабатывает текст сообщения
         """

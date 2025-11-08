@@ -164,13 +164,13 @@ async def main():
 
     # Показываем конфигурацию при запуске
     source_topics = db.get_source_topics()
-    conductor_topic = db.get_system_topic("conductor")
+    announce_topic = db.get_system_topic("announce")
     digest_topic = db.get_system_topic("digest")
     recent_messages = db.get_messages_for_period(days=MESSAGE_RETENTION_DAYS)
 
     logger.info(f"Основной чат: {MAIN_CHAT_ID}")
     logger.info(f"Топиков-источников: {len(source_topics)}")
-    logger.info(f"Топик Анонсы: {conductor_topic['topic_id'] if conductor_topic else 'Не настроен'}")
+    logger.info(f"Топик Анонсы: {announce_topic['topic_id'] if announce_topic else 'Не настроен'}")
     logger.info(f"Топик Дайджесты: {digest_topic['topic_id'] if digest_topic else 'Не настроен'}")
     logger.info(f"Сообщений в БД за {MESSAGE_RETENTION_DAYS} дней: {len(recent_messages)}")
 

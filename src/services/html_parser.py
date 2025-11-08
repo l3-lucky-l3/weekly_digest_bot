@@ -53,13 +53,6 @@ class HTMLParserService:
 
             for message in messages:
                 try:
-                    # Обрабатываем сервисные сообщения с датами
-                    if self._is_service_message(message):
-                        date_text = self._extract_service_date(message)
-                        if date_text:
-                            current_date = self._parse_date(date_text)
-                        continue
-
                     # Определяем topic_id из структуры сообщения
                     topic_id = self._extract_topic_id(message)
                     if topic_id:
@@ -67,11 +60,13 @@ class HTMLParserService:
                         stats['topics_found'].add(topic_id)
 
                     # Парсим данные сообщения
-                    message_data = self._parse_message(message, current_topic_id, current_date)
+                    message_data = self._parse_message(message, current_topic_id)
                     if message_data and message_data.get('message_text'):
                         # Сохраняем в БД
                         if self.db.save_message(message_data):
                             saved_count += 1
+                            logger.debug(
+                                f"Сообщение сохранено: {message_data['message_text'][:50]}... (дата: {message_data['created_at']})")
 
                 except Exception as e:
                     logger.error(f"Ошибка парсинга сообщения: {e}")
@@ -107,68 +102,21 @@ class HTMLParserService:
             logger.error(f"Ошибка проверки сервисного сообщения: {e}")
             return False
 
-    def _extract_service_date(self, message) -> str:
-        """
-        Извлекает дату из сервисного сообщения
-        """
-        try:
-            body = message.find('div', class_='body')
-            if body:
-                details = body.find('div', class_='details')
-                if details:
-                    return details.get_text(strip=True)
-            return None
-        except Exception as e:
-            logger.error(f"Ошибка извлечения сервисной даты: {e}")
-            return None
-
-    def _parse_date(self, date_text: str) -> datetime:
-        """
-        Парсит дату из текста
-        """
-        try:
-            # Пробуем разные форматы дат
-            formats = [
-                '%d %B %Y',  # 8 July 2025
-                '%d %b %Y',  # 8 Jul 2025
-                '%d.%m.%Y',  # 08.07.2025
-                '%Y-%m-%d',  # 2025-07-08
-            ]
-
-            for fmt in formats:
-                try:
-                    return datetime.strptime(date_text, fmt)
-                except ValueError:
-                    continue
-
-            # Если не удалось распарсить, возвращаем текущую дату
-            logger.warning(f"Не удалось распарсить дату: {date_text}")
-            return datetime.now()
-        except Exception as e:
-            logger.error(f"Ошибка парсинга даты: {e}")
-            return datetime.now()
-
-    def _extract_message_datetime(self, message, current_date: datetime) -> datetime:
+    def _extract_message_datetime(self, message):
         """
         Извлекает дату и время из сообщения
         """
         try:
             # Ищем время в сообщении
             time_element = message.find('div', class_='date')
-            if time_element and current_date:
-                time_text = time_element.get('title', '') or time_element.get_text(strip=True)
-                # Ищем время в формате "13.07.2025 23:09:30 UTC+03:00" или "23:09"
-                time_match = re.search(r'(\d{1,2}):(\d{2})', time_text)
-                if time_match:
-                    hour, minute = int(time_match.group(1)), int(time_match.group(2))
-                    return current_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
-
-            # Если время не найдено, используем текущую дату
-            return current_date or datetime.now()
+            if time_element:
+                time_text = time_element.get('title', '')
+                result_date = datetime.strptime(time_text, "%d.%m.%Y %H:%M:%S UTC+03:00")
+                return result_date
 
         except Exception as e:
             logger.error(f"Ошибка извлечения времени сообщения: {e}")
-            return current_date or datetime.now()
+            return None
 
     def _extract_topic_id(self, message) -> int:
         """
@@ -222,7 +170,7 @@ class HTMLParserService:
             logger.error(f"Ошибка извлечения message_id: {e}")
             return hash(str(datetime.now())) % 1000000000
 
-    def _parse_message(self, message, topic_id: int, current_date: datetime) -> dict:
+    def _parse_message(self, message, topic_id: int) -> dict:
         """
         Парсит отдельное сообщение
         """
@@ -234,7 +182,7 @@ class HTMLParserService:
                 'thread_id': None,
                 'parent_message_id': None,
                 'classification_id': None,
-                'created_at': self._extract_message_datetime(message, current_date)
+                'created_at': self._extract_message_datetime(message)
             }
 
             # Извлекаем текст сообщения
@@ -327,7 +275,7 @@ class HTMLParserService:
 
     def _clean_text(self, text: str) -> str:
         """
-        Очищает текст от лишних пробелов и символов
+        Обрабатывает текст сообщения
         """
         if not text:
             return ''

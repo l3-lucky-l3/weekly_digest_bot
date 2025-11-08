@@ -15,3 +15,10 @@ python src/main_with_proxy.py
 ```bash
 Ctrl+C
 ```
+
+
+
+```bash
+# распаковать архив
+unrar x src.rar .
+```

@@ -56,6 +56,7 @@ MESSAGE_RETENTION_DAYS = 7
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MAIN_CHAT_ID = os.getenv("MAIN_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
+processing_in_progress = False
 
 # Проверка обязательных переменных
 if not BOT_TOKEN:
@@ -87,7 +88,7 @@ bot = create_bot_with_proxy()  # TODO del | this for pythonanywhere
 dp = Dispatcher()
 db = Database()
 ai_client = AIClient()
-classification_service = ClassificationService(db, ai_client)  # Новый сервис
+classification_service = ClassificationService(db, ai_client, batch_size=5)
 posting_service = PostingService(db, ai_client, MAIN_CHAT_ID, ADMIN_CHAT_ID)
 html_parser = HTMLParserService(db)
 
@@ -143,6 +144,7 @@ async def scheduled_posting():
     last_message_processing_date = None
     last_cleanup_date = None
     startup_processed = False  # Флаг для обработки при запуске
+    processing_in_progress = False  # Флаг чтобы избежать параллельной обработки
 
     while True:
         try:
@@ -152,49 +154,104 @@ async def scheduled_posting():
             weekday = now.strftime("%A")
 
             # Обработка при первом запуске бота
-            if not startup_processed:
-                logger.info("Первоначальная обработка накопленных сообщений...")
-                await classification_service.process_unprocessed_messages()
+            if not startup_processed and not processing_in_progress:
+                logger.info("Запуск первоначальной обработки накопленных сообщений...")
+                processing_in_progress = True
+                # Запускаем в отдельной задаче чтобы не блокировать бота
+                asyncio.create_task(
+                    safe_process_unprocessed_messages(classification_service)
+                )
                 startup_processed = True
-                logger.info("Первоначальная обработка завершена")
-                await asyncio.sleep(5)  # Короткая пауза перед продолжением
+                await asyncio.sleep(5)
 
             # Обработка необработанных сообщений - раз в сутки в 02:00
-            elif current_time == "02:00":
+            elif current_time == "02:00" and not processing_in_progress:
                 if last_message_processing_date != current_date:
                     logger.info("Запуск ежедневной обработки сообщений...")
-                    await classification_service.process_unprocessed_messages()  # Используем сервис
+                    processing_in_progress = True
+                    asyncio.create_task(
+                        safe_process_unprocessed_messages(classification_service,
+                                                        last_message_processing_date)
+                    )
                     last_message_processing_date = current_date
-                    logger.info("Ежедневная обработка сообщений завершена")
-                    await asyncio.sleep(60)  # Защита от повторного запуска в ту же минуту
+                    await asyncio.sleep(60)
 
             # Понедельник 10:00 - цели/блокеры
             elif weekday == "Monday" and current_time == "10:00":
                 logger.info("Запуск создания понедельничного поста...")
-                await posting_service.create_monday_post(bot)
+                asyncio.create_task(safe_create_monday_post(posting_service, bot))
                 await asyncio.sleep(60)
 
             # Пятница 19:00 - Weekly Digest
             elif weekday == "Friday" and current_time == "19:00":
                 logger.info("Запуск создания пятничного дайджеста...")
-                await posting_service.create_friday_digest(bot)
+                asyncio.create_task(safe_create_friday_digest(posting_service, bot))
                 await asyncio.sleep(60)
 
             # Ежедневная очистка в 03:00
             elif current_time == "03:00":
                 if last_cleanup_date != current_date:
                     logger.info("Запуск ежедневной очистки БД...")
-                    deleted_count = db.cleanup_old_messages(days=MESSAGE_RETENTION_DAYS)
-                    if deleted_count > 0:
-                        logger.info(f"Автоочистка БД: удалено {deleted_count} старых сообщений")
+                    # Очистка БД обычно быстрая, но на всякий случай тоже в отдельной задаче
+                    asyncio.create_task(safe_cleanup_messages(db, MESSAGE_RETENTION_DAYS))
                     last_cleanup_date = current_date
                     await asyncio.sleep(60)
 
-            await asyncio.sleep(30)  # Проверяем каждые 30 секунд
+            await asyncio.sleep(30)
 
         except Exception as e:
             logger.error(f"Error in scheduled posting: {e}")
+            processing_in_progress = False
             await asyncio.sleep(60)
+
+
+async def safe_process_unprocessed_messages(classification_service, date_tracker=None):
+    """Безопасная обработка сообщений в отдельной задаче"""
+    try:
+        processed_count = await classification_service.process_unprocessed_messages()
+        logger.info(f"✅ Обработка сообщений завершена. Обработано: {processed_count}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при обработке сообщений: {e}")
+    finally:
+        # Сбрасываем флаг независимо от результата
+        global processing_in_progress
+        processing_in_progress = False
+
+
+async def safe_create_monday_post(posting_service, bot):
+    """Безопасное создание понедельничного поста"""
+    try:
+        success = await posting_service.create_monday_post(bot)
+        if success:
+            logger.info("✅ Понедельничный пост создан успешно")
+        else:
+            logger.error("❌ Ошибка при создании понедельничного поста")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при создании понедельничного поста: {e}")
+
+
+async def safe_create_friday_digest(posting_service, bot):
+    """Безопасное создание пятничного дайджеста"""
+    try:
+        success = await posting_service.create_friday_digest(bot)
+        if success:
+            logger.info("✅ Пятничный дайджест создан успешно")
+        else:
+            logger.error("❌ Ошибка при создании пятничного дайджеста")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при создании пятничного дайджеста: {e}")
+
+
+async def safe_cleanup_messages(db, retention_days):
+    """Безопасная очистка сообщений"""
+    try:
+        deleted_count = db.cleanup_old_messages(days=retention_days)
+        if deleted_count > 0:
+            logger.info(f"✅ Автоочистка БД: удалено {deleted_count} старых сообщений")
+        else:
+            logger.info("✅ Нечего очищать")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при очистке БД: {e}")
 
 
 # === ЗАПУСК БОТА ===

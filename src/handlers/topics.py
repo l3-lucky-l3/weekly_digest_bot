@@ -17,14 +17,18 @@ async def cmd_add_topic(message: Message, db):
             )
             return
 
+        args = message.text.split()[1:]
+        topic_name = ' '.join(args)
+
         topic_id = message.message_thread_id
 
         # Получаем название топика из reply_to_message если есть
-        topic_name = "Без названия"
-        if (message.reply_to_message and
-                hasattr(message.reply_to_message, 'forum_topic_created') and
-                message.reply_to_message.forum_topic_created):
-            topic_name = message.reply_to_message.forum_topic_created.name or "Без названия"
+        if not topic_name:
+            topic_name = "Без названия"
+            if (message.reply_to_message and
+                    hasattr(message.reply_to_message, 'forum_topic_created') and
+                    message.reply_to_message.forum_topic_created):
+                topic_name = message.reply_to_message.forum_topic_created.name or "Без названия"
 
         if db.add_source_topic(topic_id, topic_name):
             response = f"✅ Топик добавлен в источники:\nID: <code>{topic_id}</code>\nНазвание: {topic_name}"
@@ -92,14 +96,18 @@ async def cmd_select_conductor_topic(message: Message, db):
             )
             return
 
+        args = message.text.split()[1:]
+        topic_name = ' '.join(args)
+
         topic_id = message.message_thread_id
 
         # Получаем название топика из reply_to_message если есть
-        topic_name = "Conductor"
-        if (message.reply_to_message and
-                hasattr(message.reply_to_message, 'forum_topic_created') and
-                message.reply_to_message.forum_topic_created):
-            topic_name = message.reply_to_message.forum_topic_created.name or "Conductor"
+        if not topic_name:
+            topic_name = "Conductor"
+            if (message.reply_to_message and
+                    hasattr(message.reply_to_message, 'forum_topic_created') and
+                    message.reply_to_message.forum_topic_created):
+                topic_name = message.reply_to_message.forum_topic_created.name or "Conductor"
 
         if db.set_system_topic("conductor", topic_id, topic_name):
             response = f"✅ Топик Conductor установлен:\nID: <code>{topic_id}</code>\nНазвание: {topic_name}"
@@ -123,14 +131,18 @@ async def cmd_select_announcements_topic(message: Message, db):
             )
             return
 
+        args = message.text.split()[1:]
+        topic_name = ' '.join(args)
+
         topic_id = message.message_thread_id
 
         # Получаем название топика из reply_to_message если есть
-        topic_name = "Анонсы"
-        if (message.reply_to_message and
-                hasattr(message.reply_to_message, 'forum_topic_created') and
-                message.reply_to_message.forum_topic_created):
-            topic_name = message.reply_to_message.forum_topic_created.name or "Анонсы"
+        if not topic_name:
+            topic_name = "Анонсы"
+            if (message.reply_to_message and
+                    hasattr(message.reply_to_message, 'forum_topic_created') and
+                    message.reply_to_message.forum_topic_created):
+                topic_name = message.reply_to_message.forum_topic_created.name or "Анонсы"
 
         if db.set_system_topic("announcements", topic_id, topic_name):
             response = f"✅ Топик Анонсы установлен:\nID: <code>{topic_id}</code>\nНазвание: {topic_name}"

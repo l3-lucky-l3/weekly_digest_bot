@@ -198,7 +198,7 @@ class Database:
                 cursor = conn.cursor()
                 cursor.execute('''
                     INSERT OR REPLACE INTO chat_messages 
-                    (message_id, topic_id, thread_id, parent_message_id, classification_id, message_text)
+                    (message_id, topic_id, thread_id, parent_message_id, classification_id, message_text, processed)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     message_data.get('message_id'),

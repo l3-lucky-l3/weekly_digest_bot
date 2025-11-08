@@ -12,6 +12,7 @@ from handlers.commands import register_command_handlers
 from handlers.topics import register_topic_handlers
 from utils.filters import SourceTopicsFilter
 from services.posting_service import PostingService
+from services.html_parser import HTMLParserService
 
 
 # === КОНФИГУРАЦИЯ ===
@@ -46,12 +47,13 @@ dp = Dispatcher()
 db = Database()
 ai_client = AIClient()
 posting_service = PostingService(db, ai_client, MAIN_CHAT_ID, ADMIN_CHAT_ID)
+html_parser = HTMLParserService(db)
 
 
 # === РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ===
 def register_all_handlers():
     """Регистрирует все обработчики бота"""
-    register_command_handlers(dp, db, bot, ai_client, posting_service)
+    register_command_handlers(dp, db, bot, ai_client, posting_service, html_parser)
     register_topic_handlers(dp, db, MAIN_CHAT_ID)
 
     # Регистрация кастомного фильтра для топиков-источников

@@ -1,3 +1,4 @@
+import os
 import logging
 from aiogram import Dispatcher, F
 from aiogram.filters import Command, StateFilter
@@ -16,6 +17,10 @@ class PromptStates(StatesGroup):
 
 class PostStates(StatesGroup):
     waiting_for_edit = State()
+
+
+class ParseHTMLStates(StatesGroup):
+    waiting_for_html_file = State()
 
 
 # Глобальные переменные для временного хранения данных
@@ -51,6 +56,9 @@ async def cmd_start(message: Message):
 /setprompt <announce|digest> - установить промпт для анонсов или дайджестов
 /show_prompts - показать текущие промпты
 /cancel - отменить настройку промпта
+
+📁 Импорт истории:
+/parse_html - импорт истории чата из HTML файла (экспорт Telegram)
 
 🔧 Утилиты:
 /get_chat_id - показать ID текущего чата/топика
@@ -435,10 +443,9 @@ async def handle_post_confirmation(callback: CallbackQuery, state: FSMContext, d
             )
 
             await callback.message.edit_text(
-                f"✏️ <b>Редактирование поста:</b>\n\n"
-                f"<i>Текущий текст:</i>\n<code>{message_data['message_text']}</code>\n\n"
-                f"📝 <b>Отправьте новый текст поста:</b>",
-                parse_mode="HTML",
+                f"✏️ Редактирование поста:\n\n\n"
+                f"Текущий текст:\n\n`{message_data['message_text']}\n\n\n"
+                f"📝 Отправьте новый текст поста:",
                 reply_markup=markup
             )
 
@@ -480,7 +487,6 @@ async def handle_post_edit(message: Message, state: FSMContext, db):
                 f"📝 <b>Пост обновлен:</b>\n\n"
                 f"{message.text}\n\n"
                 f"<b>Выберите действие:</b>",
-                parse_mode="HTML",
                 reply_markup=markup
             )
 
@@ -516,7 +522,79 @@ async def handle_cancel_edit(callback: CallbackQuery, state: FSMContext):
         await state.clear()
 
 
-def register_command_handlers(dp: Dispatcher, db, bot, ai_client, posting_service):
+# Парсинг истории чата
+async def cmd_parse_html(message: Message, state: FSMContext, html_parser, bot):
+    """Обработчик команды /parse_html - запускает процесс парсинга истории чата"""
+    await message.answer(
+        "📁 <b>Парсинг истории чата из HTML файла</b>\n\n"
+        "Отправьте мне файл <code>messages.html</code> (экспорт из Telegram)\n\n"
+        "⚠️ <i>Файл должен быть в формате экспорта Telegram</i>\n"
+        "❌ Для отмены используйте /cancel",
+        parse_mode="HTML"
+    )
+    await state.set_state(ParseHTMLStates.waiting_for_html_file)
+
+
+async def handle_html_file(message: Message, state: FSMContext, html_parser, bot):
+    """Обработчик получения HTML файла"""
+    try:
+        if not message.document:
+            await message.answer("❌ Пожалуйста, отправьте файл messages.html")
+            return
+
+        if not message.document.file_name.endswith('.html'):
+            await message.answer("❌ Файл должен быть в формате HTML")
+            return
+
+        # Скачиваем файл
+        file_info = await bot.get_file(message.document.file_id)
+        downloaded_file = await bot.download_file(file_info.file_path)
+
+        # Сохраняем временный файл
+        temp_file_path = f"temp_messages_{message.from_user.id}.html"
+        with open(temp_file_path, 'wb') as f:
+            f.write(downloaded_file.read())
+
+        await message.answer("⏳ <b>Начинаю парсинг файла...</b>", parse_mode="HTML")
+
+        # Парсим HTML файл
+        result = await html_parser.parse_html_file(temp_file_path)
+
+        # Удаляем временный файл
+        os.remove(temp_file_path)
+
+        if result['success']:
+            await message.answer(
+                f"✅ <b>Парсинг завершен успешно!</b>\n\n"
+                f"📊 <b>Статистика:</b>\n"
+                f"• Сообщений обработано: {result['total_messages']}\n"
+                f"• Сообщений сохранено: {result['saved_messages']}\n"
+                f"• Топиков найдено: {result['topics_found']}\n"
+                f"• Время обработки: {result['processing_time']:.2f} сек.\n\n"
+                f"💾 <b>Данные сохранены в базу</b>",
+                parse_mode="HTML"
+            )
+        else:
+            await message.answer(
+                f"❌ <b>Ошибка при парсинге:</b>\n{result['error']}",
+                parse_mode="HTML"
+            )
+
+        await state.clear()
+
+    except Exception as e:
+        logger.error(f"Error processing HTML file: {e}")
+        await message.answer(f"❌ <b>Ошибка при обработке файла:</b>\n{str(e)}", parse_mode="HTML")
+        await state.clear()
+
+
+async def cmd_cancel_parse(message: Message, state: FSMContext):
+    """Отмена парсинга HTML"""
+    await message.answer("❌ Парсинг отменен")
+    await state.clear()
+
+
+def register_command_handlers(dp: Dispatcher, db, bot, ai_client, posting_service, html_parser):
     """Регистрирует обработчики команд"""
 
     # Создаем замыкания для обработчиков, которым нужны дополнительные параметры
@@ -556,6 +634,12 @@ def register_command_handlers(dp: Dispatcher, db, bot, ai_client, posting_servic
     async def wrapped_handle_cancel_edit(callback: CallbackQuery, state: FSMContext):
         await handle_cancel_edit(callback, state)
 
+    async def wrapped_parse_html(message: Message, state: FSMContext):
+        await cmd_parse_html(message, state, html_parser, bot)
+
+    async def wrapped_handle_html_file(message: Message, state: FSMContext):
+        await handle_html_file(message, state, html_parser, bot)
+
     # Регистрируем обработчики команд
     dp.message.register(cmd_start, Command("start"))
     dp.message.register(cmd_get_chat_id, Command("get_chat_id"))
@@ -591,4 +675,15 @@ def register_command_handlers(dp: Dispatcher, db, bot, ai_client, posting_servic
     dp.message.register(
         wrapped_handle_post_edit,
         StateFilter(PostStates.waiting_for_edit)
+    )
+
+    dp.message.register(wrapped_parse_html, Command("parse_html"))
+    dp.message.register(
+        wrapped_handle_html_file,
+        ParseHTMLStates.waiting_for_html_file
+    )
+    dp.message.register(
+        cmd_cancel_parse,
+        Command("cancel"),
+        ParseHTMLStates.waiting_for_html_file
     )

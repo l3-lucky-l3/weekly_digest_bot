@@ -60,7 +60,7 @@ async def cmd_start(message: Message):
 
 🔧 Утилиты:
 /get_chat_id - показать ID текущего чата/топика
-/test_post <announce|digest> - тестовая отправка поста
+/post <announce|digest> - немедленная отправка поста
 /cleanup_messages - очистить старые сообщения из БД
 
 💡 Команды управления топиками должны выполняются внутри нужного топика!
@@ -359,31 +359,32 @@ async def cmd_show_prompts(message: Message, db):
 
 
 # Тестовые посты
-async def cmd_test_post(message: Message, bot, posting_service):
+async def cmd_post(message: Message, bot, posting_service):
     """Тестовая команда для отправки примеров постов"""
     try:
         args = message.text.split()[1:]
-        post_type = args[0] if args else "announce"
 
-        if post_type not in ["announce", "digest"]:
+        if not args or args[0] not in ["announce", "digest"]:
             await message.answer(
-                "❌ Использование: /test_post <тип>\n"
-                "Типы:\n"
-                "• announce - тест понедельничного поста\n"
-                "• digest - тест пятничного дайджеста\n"
-                "Пример: /test_post announce"
+                "Использование:\n"
+                "• <code>/post announce</code> - понедельничный пост\n"
+                "• <code>/post digest</code> - пятничный дайджест",
+                parse_mode="HTML"
             )
+            return
 
-        success = await posting_service.create_test_post(post_type, bot)
+        await message.answer(f"<code>Начинаю создание {args[0]} поста...</code>", parse_mode="HTML")
+
+        success = await posting_service.create_post(args[0], bot)
 
         if success:
-            await message.answer(f"✅ Тестовый {post_type} пост успешно создан")
+            await message.answer(f"✅ {args[0]} пост успешно создан")
         else:
-            await message.answer(f"❌ Ошибка при создании тестового {post_type} поста")
+            await message.answer(f"❌ Ошибка при создании {args[0]} поста")
 
     except Exception as e:
-        logger.error(f"Error in test_post command: {e}")
-        await message.answer("❌ Ошибка при создании тестового поста")
+        logger.error(f"Error in post command: {e}")
+        await message.answer("❌ Ошибка при создании поста")
 
 
 # Посты
@@ -613,8 +614,8 @@ def register_command_handlers(dp: Dispatcher, db, bot, ai_client, posting_servic
     async def wrapped_show_prompts(message: Message):
         await cmd_show_prompts(message, db)
 
-    async def wrapped_test_post(message: Message):
-        await cmd_test_post(message, bot, posting_service)
+    async def wrapped_post(message: Message):
+        await cmd_post(message, bot, posting_service)
 
     async def wrapped_handle_post_confirmation(callback: CallbackQuery, state: FSMContext):
         await handle_post_confirmation(callback, state, db, bot, posting_service)
@@ -653,7 +654,7 @@ def register_command_handlers(dp: Dispatcher, db, bot, ai_client, posting_servic
         F.data.in_(["prompt_confirm_yes", "prompt_confirm_no"])
     )
 
-    dp.message.register(wrapped_test_post, Command("test_post"))
+    dp.message.register(wrapped_post, Command("post"))
 
     dp.callback_query.register(
         wrapped_handle_post_confirmation,

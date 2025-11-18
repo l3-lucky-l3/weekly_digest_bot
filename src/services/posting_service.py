@@ -267,7 +267,7 @@ class PostingService:
         all_titles = list(set(goal_titles + goal_titles_alt))
         return all_titles
 
-    async def create_test_post(self, post_type, bot):
+    async def create_post(self, post_type, bot):
         """Создает тестовый пост указанного типа"""
         if post_type == "announce":
             return await self.create_monday_post(bot)

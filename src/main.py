@@ -6,14 +6,14 @@ from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher
 
-from db import Database
-from ai_client import AIClient
-from handlers.commands import register_command_handlers
-from handlers.topics import register_topic_handlers
-from utils.filters import SourceTopicsFilter
-from services.posting_service import PostingService
-from services.html_parser import HTMLParserService
-from services.classification_service import ClassificationService
+from src.db import Database
+from src.ai_client import AIClient
+from src.handlers.commands import register_command_handlers
+from src.handlers.topics import register_topic_handlers
+from src.utils.filters import SourceTopicsFilter
+from src.services.posting_service import PostingService
+from src.services.html_parser import HTMLParserService
+from src.services.classification_service import ClassificationService
 
 
 # === КОНФИГУРАЦИЯ ===

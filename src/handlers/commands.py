@@ -95,14 +95,6 @@ async def cmd_get_chat_id(message: Message):
         if hasattr(message, 'message_thread_id') and message.message_thread_id:
             response += f"\n<b>ID топика:</b> <code>{message.message_thread_id}</code>"
 
-        response += f"""
-
-💡 <b>Команды для этого топика:</b>
-/addtopic - добавить в источники
-/deletetopic - удалить из источников
-/selectannouncetopic - установить как announce
-/selectdigesttopic - установить как Анонсы
-"""
         await message.answer(response, parse_mode="HTML")
 
     except Exception as e:
@@ -485,6 +477,7 @@ async def handle_post_edit(message: Message, state: FSMContext, db):
                 f"{message.text}\n\n"
                 f"---\n"
                 f"Выберите действие:",
+                reply_markup=markup,
             )
 
             # Сохраняем ID нового сообщения для дальнейших действий

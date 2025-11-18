@@ -1,4 +1,5 @@
 import logging
+from typing import List, Dict
 from datetime import datetime, timedelta
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -21,12 +22,18 @@ class PostingService:
                 logger.error("Топик announce не настроен")
                 return False
 
-            # Получаем активные треды за последнюю неделю
+            # Получаем активные треды за последнюю неделю ТОЛЬКО с классификацией 'goal' или 'blocker'
+            # Это гарантирует, что пост формируется на основе уже выделенных AI целей и блеров
             active_threads = self.db.get_active_threads_with_messages(days=7)
+            relevant_threads = [t for t in active_threads if t['classification_id'] in ['goal', 'blocker']]
 
-            if not active_threads:
-                logger.info("Нет активных тредов для понедельничного поста")
+            if not relevant_threads:
+                logger.info("Нет активных тредов 'goal' или 'blocker' для понедельничного поста")
+                # Возможно, стоит создать пост с уведомлением об этом?
+                # Пока просто возвращаем False
                 return False
+
+            logger.info(f"Найдено {len(relevant_threads)} релевантных тредов для поста.")
 
             # Используем промпт для анонсов
             prompt = self.db.get_prompt("announce")
@@ -34,11 +41,11 @@ class PostingService:
                 logger.error("Промпт для анонсов не настроен")
                 return False
 
-            # Добавляем контекст сообщений
-            message_context = self._prepare_message_context(active_threads)
-            full_prompt = f"{prompt}\n\n{message_context}"
+            # Подготовка контекста ТОЛЬКО из релевантных тредов
+            message_context = self._prepare_monday_context(relevant_threads)
+            full_prompt = f"{prompt}\n\nКонтекст для анализа:\n{message_context}"
 
-            post_text = await self.ai_client.send_request(full_prompt)
+            post_text = await self.ai_client.send_request_with_retry(full_prompt)
 
             # Сначала сохраняем сообщение в БД
             message_obj_id = self.db.save_message({
@@ -47,31 +54,38 @@ class PostingService:
                 'message_text': post_text,
                 'thread_id': None,
                 'parent_message_id': None,
-                'classification_id': "announce",
+                'classification_id': "announce", # <-- Уточняем classification_id для сохраняемого сообщения
                 'processed': True
             })
 
-            markup = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(text="✅ Опубликовать", callback_data=f"publish_post:{message_obj_id}"),
-                        InlineKeyboardButton(text="❌ Редактировать", callback_data=f"edit_post:{message_obj_id}")
-                    ]
-                ]
-            )
+            markup = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Опубликовать", callback_data=f"publish_post:{message_obj_id}"),
+                 InlineKeyboardButton(text="❌ Редактировать", callback_data=f"edit_post:{message_obj_id}")]
+            ])
 
-            await bot.send_message(
-                chat_id=self.admin_chat_id,
-                text=post_text,
-                reply_markup=markup
-            )
-
+            await bot.send_message(chat_id=self.admin_chat_id, text=post_text, reply_markup=markup)
             logger.info("Понедельничный пост опубликован")
             return True
 
         except Exception as e:
             logger.error(f"Error creating Monday post: {e}")
             return False
+
+    def _prepare_monday_context(self, relevant_threads: List[Dict]) -> str:
+        """Подготавливает контекст из релевантных (goal/blocker) тредов для понедельничного поста."""
+        context_parts = []
+        for thread in relevant_threads:
+            # Формируем строку с информацией о треде
+            thread_info = f"- Тред '{thread['title']}' (Классификация: {thread['classification_id']})"
+            # Добавляем ключевые сообщения из треда, если они есть
+            if thread['messages']:
+                # Берем, например, последние 2-3 сообщения для контекста
+                # Можно также использовать первое сообщение треда как основное описание
+                key_messages = thread['messages'][-3:]  # Берем последние 3 сообщения
+                thread_info += f". Ключевые моменты: {'; '.join(key_messages[:2])}"  # Ограничиваем длину
+            context_parts.append(thread_info)
+        # Объединяем все в одну строку
+        return "\n".join(context_parts)
 
     async def create_friday_digest(self, bot):
         """Создает еженедельный дайджест (Пт 19:00)"""
@@ -83,10 +97,24 @@ class PostingService:
 
             # Получаем сообщения из БД за последнюю неделю
             recent_messages = self.db.get_messages_for_period(days=7)
-
             if not recent_messages:
                 logger.info("Нет сообщений в БД для Friday Digest")
                 return False
+
+            # Получаем активные треды за неделю для "Разбиения по топикам"
+            active_threads = self.db.get_active_threads_with_messages(days=7)
+
+            # Получаем топики-источники
+            source_topics = self.db.get_source_topics()
+
+            # Получаем цели и блокеры за неделю
+            weekly_goals = self.db.get_threads_by_classification('goal', days=7)
+            weekly_blockers = self.db.get_threads_by_classification('blocker', days=7)
+
+            # Получаем последний анонс целей и извлекаем из него цели
+            last_announcement = self.db.get_last_announcement()
+            last_goals_from_announcement = self._extract_goals_from_announcement(
+                last_announcement) if last_announcement else []
 
             # Используем промпт для дайджестов
             prompt = self.db.get_prompt("digest")
@@ -94,17 +122,41 @@ class PostingService:
                 logger.error("Промпт для дайджестов не настроен")
                 return False
 
-            # Добавляем контекст сообщений с новой структурой
-            message_context = self._prepare_digest_context(recent_messages)
+            # Подготовка контекста для каждого раздела
+            topics_context = self._prepare_digest_topics_context(active_threads, source_topics)
+            goals_progress_context = self._prepare_goals_progress_context(last_goals_from_announcement, recent_messages)
+            blockers_context = self._prepare_digest_blockers_context(weekly_blockers)
+            new_goals_context = self._prepare_digest_new_goals_context(weekly_goals)
+
+            # Формируем общий контекст
+            message_context = f"""
+               --- КОНТЕКСТ ДЛЯ ДАЙДЖЕСТА ---
+               # Разбиение по топикам:
+               {topics_context}
+
+               # Прошлые цели (из последнего анонса) и их обсуждение за неделю:
+               {goals_progress_context}
+
+               # Блокеры недели (новые треды 'blocker'):
+               {blockers_context}
+
+               # Новые цели недели (новые треды 'goal'):
+               {new_goals_context}
+
+               --- КОНТЕКСТ ДЛЯ ДАЙДЖЕСТА ---
+               """
 
             # Добавляем даты для шаблона
             end_date = datetime.now()
             start_date = end_date - timedelta(days=7)
-            date_range = f"{start_date.strftime('%d.%m.%Y')} – {end_date.strftime('%d.%m.%Y')}"
 
-            full_prompt = f"{prompt}\n\nПериод: {date_range}\n\nКонтекст:\n{message_context}"
+            full_prompt = prompt.format(
+                message_context=message_context,
+                start_date=start_date.strftime('%d.%m.%Y'),
+                end_date=end_date.strftime('%d.%m.%Y')
+            )
 
-            post_text = await self.ai_client.send_request(full_prompt)
+            post_text = await self.ai_client.send_request_with_retry(full_prompt)  # Используем retry
 
             # Сначала сохраняем сообщение в БД
             message_obj_id = self.db.save_message({
@@ -117,21 +169,12 @@ class PostingService:
                 'processed': True
             })
 
-            markup = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(text="✅ Опубликовать", callback_data=f"publish_post:{message_obj_id}"),
-                        InlineKeyboardButton(text="❌ Редактировать", callback_data=f"edit_post:{message_obj_id}")
-                    ]
-                ]
-            )
+            markup = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Опубликовать", callback_data=f"publish_post:{message_obj_id}"),
+                 InlineKeyboardButton(text="❌ Редактировать", callback_data=f"edit_post:{message_obj_id}")]
+            ])
 
-            await bot.send_message(
-                chat_id=self.admin_chat_id,
-                text=post_text,
-                reply_markup=markup
-            )
-
+            await bot.send_message(chat_id=self.admin_chat_id, text=post_text, reply_markup=markup)
             logger.info("Пятничный дайджест создан с новой структурой")
             return True
 
@@ -139,69 +182,90 @@ class PostingService:
             logger.error(f"Error creating Friday digest: {e}")
             return False
 
-    def _prepare_message_context(self, active_threads):
-        """Подготавливает контекст сообщений для понедельничного поста"""
+    def _prepare_digest_topics_context(self, active_threads: List[Dict], source_topics: List[Dict]) -> str:
+        """Подготавливает ЧИСТЫЙ контекст для раздела топиков"""
+        if not active_threads:
+            return "Нет активных обсуждений"
+
+        topic_names = {t['topic_id']: t['topic_name'] for t in source_topics}
         context_parts = []
 
         for thread in active_threads:
-            if thread['messages']:
-                thread_context = f"Тред '{thread['title']}' ({thread['classification_id']}): "
-                thread_context += "; ".join(thread['messages'][:5])  # Берем первые 5 сообщений
-                context_parts.append(thread_context)
+            topic_id = thread.get('topic_id')
+            topic_name = topic_names.get(topic_id, "Общие обсуждения")
+            thread_title = thread.get('title', 'Без названия')
 
-        return "Активные обсуждения:\n" + "\n".join(context_parts)
+            # Берем только релевантные сообщения (не пустые)
+            relevant_messages = [msg for msg in thread.get('messages', [])
+                                 if msg and msg != "Тред без сообщений...."]
 
-    def _prepare_digest_context(self, recent_messages):
-        """Подготавливает контекст для пятничного дайджеста с новой структурой"""
+            if relevant_messages:
+                # Берем последнее значимое сообщение как контекст
+                last_message = relevant_messages[-1][:150] + "..." if len(relevant_messages[-1]) > 150 else \
+                relevant_messages[-1]
+                context_parts.append(f"{topic_name} | {thread_title}: {last_message}")
 
-        # 1. Получаем топики-источники и их сообщения
-        source_topics = self.db.get_source_topics()
-        topics_context = {}
+        return "\n".join(context_parts) if context_parts else "Нет значимых обсуждений"
 
-        for topic in source_topics:
-            topic_messages = [msg for msg in recent_messages
-                              if msg.get('topic_id') == topic['topic_id']]
-            if topic_messages:
-                topics_context[topic['topic_name'] or f"Топик {topic['topic_id']}"] = [
-                    msg['message_text'] for msg in topic_messages[:10]  # Берем до 10 сообщений на топик
-                ]
-
-        # 2. Получаем последний анонс целей
-        last_announcement = self.db.get_last_announcement()
-
-        # 3. Получаем цели и блокеры за неделю
-        weekly_goals = [msg for msg in recent_messages
-                        if msg.get('classification_id') == 'goal']
-        weekly_blockers = [msg for msg in recent_messages
-                           if msg.get('classification_id') == 'blocker']
+    def _prepare_goals_progress_context(self, last_goals: List[str], recent_messages: List[Dict]) -> str:
+        """Упрощенный контекст для целей"""
+        if not last_goals:
+            return "Нет целей из предыдущего анонса"
 
         context_parts = []
-
-        # Контекст по топикам
-        context_parts.append("=== ОБСУЖДЕНИЯ ПО ТОПИКАМ ===")
-        for topic_name, messages in topics_context.items():
-            context_parts.append(f"Топик: {topic_name}")
-            context_parts.extend(messages[:3])  # Берем 3 сообщения для контекста
-            context_parts.append("---")
-
-        # Контекст прошлого анонса
-        if last_announcement:
-            context_parts.append("=== ПРОШЛЫЙ АНОНС ЦЕЛЕЙ ===")
-            context_parts.append(last_announcement)
-
-        # Контекст новых целей
-        if weekly_goals:
-            context_parts.append("=== НОВЫЕ ЦЕЛИ ЗА НЕДЕЛЮ ===")
-            for goal in weekly_goals[:5]:
-                context_parts.append(f"Цель: {goal['message_text'][:100]}...")
-
-        # Контекст блокеров
-        if weekly_blockers:
-            context_parts.append("=== БЛОКЕРЫ ЗА НЕДЕЛЮ ===")
-            for blocker in weekly_blockers[:5]:
-                context_parts.append(f"Блокер: {blocker['message_text'][:100]}...")
+        for goal in last_goals:
+            # Простая проверка упоминания
+            mentioned = any(goal.lower() in msg.get('message_text', '').lower()
+                            for msg in recent_messages)
+            status = "обсуждалась" if mentioned else "не упоминалась"
+            context_parts.append(f"{goal} - {status}")
 
         return "\n".join(context_parts)
+
+    def _prepare_digest_blockers_context(self, weekly_blockers: List[Dict]) -> str:
+        """Чистый контекст для блокеров"""
+        if not weekly_blockers:
+            return "Нет новых блокеров"
+
+        context_parts = []
+        for blocker in weekly_blockers:
+            title = blocker.get('title', 'Без названия')
+            messages = blocker.get('messages', [])
+            description = messages[0][:100] + "..." if messages else "Описание отсутствует"
+            context_parts.append(f"{title}: {description}")
+
+        return "\n".join(context_parts)
+
+    def _prepare_digest_new_goals_context(self, weekly_goals: List[Dict]) -> str:
+        """Чистый контекст для новых целей"""
+        if not weekly_goals:
+            return "Нет новых целей"
+
+        context_parts = []
+        for goal in weekly_goals:
+            title = goal.get('title', 'Без названия')
+            messages = goal.get('messages', [])
+            description = messages[0][:100] + "..." if messages else "Описание отсутствует"
+            context_parts.append(f"{title}: {description}")
+
+        return "\n".join(context_parts)
+
+    def _extract_goals_from_announcement(self, announcement_text: str) -> List[str]:
+        """Извлекает цели из текста последнего анонса (простой парсинг)."""
+        # Простой способ: найти строки, начинающиеся с 1., 2., 3. в разделе "🎯 Предлагаемые Цели"
+        import re
+        # Ищем раздел с целями
+        goals_section_match = re.search(r'🎯 Предлагаемые Цели.*?(?=\n\n|$)', announcement_text, re.DOTALL)
+        if not goals_section_match:
+            return []
+        goals_section = goals_section_match.group(0)
+        # Ищем цели в формате 1. <b>[Название цели]</b>
+        goal_titles = re.findall(r'\d+\.\s*<b>\[([^\]]+)\]</b>', goals_section)
+        # Также ищем цели в формате 1. <b>([^<]+)</b> - если название не в квадратных скобках
+        goal_titles_alt = re.findall(r'\d+\.\s*<b>([^<]+)</b>', goals_section)
+        # Объединяем результаты, убирая дубликаты
+        all_titles = list(set(goal_titles + goal_titles_alt))
+        return all_titles
 
     async def create_test_post(self, post_type, bot):
         """Создает тестовый пост указанного типа"""

@@ -473,15 +473,115 @@ class Database:
             logger.error(f"Ошибка получения треда по родителю: {e}")
             return None
 
-    def get_last_announcement(self):
-        """Получает последнее сообщение с classification_id = 'announce'"""
+    def get_active_threads_with_messages_for_topic(self, topic_id: int, days: int = 7) -> List[Dict]:
+        """Получает активные треды с сообщениями за период для конкретного топика"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                # Сначала находим все thread_id, связанные с сообщениями в заданном топике за период
+                cursor.execute('''
+                    SELECT DISTINCT mt.thread_id
+                    FROM message_threads mt
+                    JOIN chat_messages cm ON mt.thread_id = cm.thread_id
+                    WHERE cm.topic_id = ?
+                      AND cm.created_at >= datetime('now', ?)
+                      AND mt.is_active = TRUE
+                ''', (topic_id, f'-{days} days'))
+                thread_ids = [row[0] for row in cursor.fetchall()]
+
+                if not thread_ids:
+                    return []
+
+                # Теперь получаем полную информацию о найденных тредах и их сообщениях за период
+                placeholders = ','.join('?' * len(thread_ids))
+                cursor.execute(f'''
+                    SELECT 
+                        mt.thread_id,
+                        mt.title,
+                        mt.classification_id,
+                        mt.created_at,
+                        COUNT(cm.id) as message_count,
+                        GROUP_CONCAT(cm.message_text, ' ||| ') as messages
+                    FROM message_threads mt
+                    LEFT JOIN chat_messages cm ON mt.thread_id = cm.thread_id 
+                        AND cm.created_at >= datetime('now', ?)
+                    WHERE mt.thread_id IN ({placeholders})
+                    GROUP BY mt.thread_id
+                    ORDER BY mt.created_at DESC
+                ''', [f'-{days} days'] + thread_ids)
+                rows = cursor.fetchall()
+                result = []
+                for row in rows:
+                    thread_data = {
+                        'thread_id': row[0],
+                        'title': row[1],
+                        'classification_id': row[2],
+                        'created_at': row[3],
+                        'message_count': row[4],
+                        'messages': row[5].split(' ||| ') if row[5] else []
+                    }
+                    result.append(thread_data)
+                return result
+        except Exception as e:
+            logger.error(f"Ошибка получения тредов с сообщениями для топика {topic_id}: {e}")
+            return []
+
+    def get_threads_by_classification(self, classification_id: str, days: int = 7) -> List[Dict]:
+        """Получает треды с указанной классификацией за период"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
-                    SELECT message_text FROM chat_messages 
-                    WHERE classification_id = 'announce' 
-                    ORDER BY created_at DESC 
+                    SELECT * FROM message_threads
+                    WHERE classification_id = ?
+                      AND created_at >= datetime('now', ?)
+                      AND is_active = TRUE
+                    ORDER BY created_at DESC
+                ''', (classification_id, f'-{days} days'))
+                rows = cursor.fetchall()
+                result = []
+                for row in rows:
+                    thread_data = {
+                        'thread_id': row[0],
+                        'title': row[1],
+                        'classification_id': row[2],
+                        'created_at': row[3],
+                        'is_active': row[4],
+                        'messages': self.get_messages_for_thread(row[0], limit=5) # Получаем сообщения для контекста
+                    }
+                    result.append(thread_data)
+                return result
+        except Exception as e:
+            logger.error(f"Ошибка получения тредов классификации {classification_id}: {e}")
+            return []
+
+    def get_messages_for_thread(self, thread_id: int, limit: int = 10) -> List[str]:
+        """Получает текст сообщений для указанного треда (для контекста)"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT message_text FROM chat_messages
+                    WHERE thread_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                ''', (thread_id, limit))
+                rows = cursor.fetchall()
+                return [row[0] for row in rows]
+        except Exception as e:
+            logger.error(f"Ошибка получения сообщений треда {thread_id}: {e}")
+            return []
+
+    def get_last_announcement(self) -> Optional[str]:
+        """Получает текст последнего анонса целей (classification_id = 'announce')"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                # Предполагаем, что announce - это сообщение в chat_messages с classification_id = 'announce'
+                cursor.execute('''
+                    SELECT message_text FROM chat_messages
+                    WHERE classification_id = 'announce'
+                    ORDER BY created_at DESC
                     LIMIT 1
                 ''')
                 row = cursor.fetchone()

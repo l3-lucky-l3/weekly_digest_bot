@@ -14,37 +14,57 @@ class ClassificationService:
         self.batch_size = batch_size
 
     async def process_unprocessed_messages(self):
-        """Обрабатывает необработанные сообщения с пакетной классификацией"""
+        """Обрабатывает необработанные сообщения с пакетной классификацией, сгруппированной по топикам"""
         try:
             unprocessed_messages = self.db.get_unprocessed_messages()
             if not unprocessed_messages:
                 logger.info("Нет необработанных сообщений")
                 return 0
 
-            active_threads = self.db.get_active_threads_with_messages(days=7)
-            logger.info(f"Найдено {len(unprocessed_messages)} необработанных сообщений")
-
-            # Разбиваем на пакеты
-            batches = [unprocessed_messages[i:i + self.batch_size]
-                       for i in range(0, len(unprocessed_messages), self.batch_size)]
+            # Группируем необработанные сообщения по топику
+            messages_by_topic = {}
+            for msg in unprocessed_messages:
+                topic_id = msg['topic_id']
+                if topic_id not in messages_by_topic:
+                    messages_by_topic[topic_id] = []
+                messages_by_topic[topic_id].append(msg)
 
             total_processed = 0
-            for batch_num, batch in enumerate(batches, 1):
-                logger.info(f"Обработка пакета {batch_num}/{len(batches)} ({len(batch)} сообщений)")
-                processed_in_batch = await self.process_batch(batch, active_threads)
-                total_processed += processed_in_batch
+            logger.info(f"Найдено {len(unprocessed_messages)} необработанных сообщений в {len(messages_by_topic)} топиках")
 
-                # Добавляем паузу между пакетами чтобы дать боту "подышать"
-                if batch_num < len(batches):
-                    await asyncio.sleep(0.1)  # 100ms пауза
+            for topic_id, topic_messages in messages_by_topic.items():
+                logger.info(f"Обработка топика {topic_id}: {len(topic_messages)} сообщений")
+                # Получаем активные треды ТОЛЬКО для этого топика
+                active_threads = self.db.get_active_threads_with_messages_for_topic(topic_id, days=7)
+                logger.info(f"Найдено {len(active_threads)} активных тредов в топике {topic_id}")
 
-            logger.info(f"Обработка завершена. Всего обработано: {total_processed}")
+                # Разбиваем сообщения топика на пакеты
+                batches = [topic_messages[i:i + self.batch_size]
+                           for i in range(0, len(topic_messages), self.batch_size)]
+
+                topic_processed = 0
+                for batch_num, batch in enumerate(batches, 1):
+                    logger.info(f"Топик {topic_id}: Обработка пакета {batch_num}/{len(batches)} ({len(batch)} сообщений)")
+                    processed_in_batch = await self.process_batch(batch, active_threads)
+                    topic_processed += processed_in_batch
+
+                    # Добавляем паузу между пакетами
+                    if batch_num < len(batches):
+                        await asyncio.sleep(0.1)  # 100ms пауза
+
+                total_processed += topic_processed
+                logger.info(f"Обработка топика {topic_id} завершена. Обработано: {topic_processed}")
+
+            logger.info(f"Обработка ВСЕХ топиков завершена. Всего обработано: {total_processed}")
             return total_processed
 
         except Exception as e:
             logger.error(f"Ошибка обработки необработанных сообщений: {e}")
             return 0
 
+    # Остальные методы остаются без изменений, так как они уже принимают batch и active_threads
+    # и работают с ними в контексте текущего топика (через batch и active_threads, полученные выше).
+    # ... (остальные методы как в предыдущем обновленном коде, без изменений) ...
     async def process_batch(self, messages_batch: List[Dict], active_threads: List[Dict]) -> int:
         """Обрабатывает пакет сообщений"""
         try:
@@ -92,6 +112,7 @@ class ClassificationService:
         int, List[Dict]]:
         """Пакетный семантический слинг"""
         if not messages_batch or not active_threads:
+            logger.info("Пропуск слинга: нет сообщений или активных тредов.")
             return 0, messages_batch
 
         try:
@@ -107,19 +128,24 @@ class ClassificationService:
 
             for i, message in enumerate(messages_batch):
                 if i < len(sling_results) and sling_results[i]['related'] and sling_results[i]['thread_id']:
+                    # Получаем информацию о треде, к которому привязываем
                     thread = self.db.get_thread_by_id(sling_results[i]['thread_id'])
                     if thread:
+                        # Привязываем сообщение к найденному треду, используя его классификацию
+                        # Классификация сообщения в треде наследуется от треда
                         self.db.update_message_thread(
                             message['message_id'],
                             sling_results[i]['thread_id'],
-                            thread['classification_id']
+                            thread['classification_id'] # <-- Классификация наследуется от треда
                         )
                         processed_count += 1
                         logger.debug(
-                            f"Пакетный слинг: сообщение {message['message_id']} → тред {sling_results[i]['thread_id']}")
+                            f"Пакетный слинг: сообщение {message['message_id']} → тред {sling_results[i]['thread_id']} (классификация: {thread['classification_id']})")
                     else:
+                        logger.warning(f"Тред {sling_results[i]['thread_id']} не найден в БД при слинге.")
                         remaining_messages.append(message)
                 else:
+                    # Если AI не нашел связи, оставляем сообщение для дальнейшей классификации
                     remaining_messages.append(message)
 
             logger.debug(f"Шаг 2: пакетный слинг обработал: {processed_count}")
@@ -146,12 +172,14 @@ class ClassificationService:
             for i, message in enumerate(messages_batch):
                 if i < len(classification_results):
                     result = classification_results[i]
+                    # Применяем результат классификации, который может создать новый тред
                     if await self._apply_classification_result(message, result):
                         processed_count += 1
                 else:
                     # Если не хватило результатов, помечаем как 'other'
                     self.db.update_message_thread(message['message_id'], None, 'other')
                     processed_count += 1
+                    logger.warning(f"Нет результата классификации для сообщения {message['message_id']}, помечено как 'other'.")
 
             logger.debug(f"Шаг 3: пакетная классификация обработала: {processed_count}")
             return processed_count
@@ -163,13 +191,18 @@ class ClassificationService:
 
     def _create_batch_sling_prompt(self, messages_batch: List[Dict], active_threads: List[Dict]) -> str:
         """Создает промпт для пакетного семантического слинга"""
-
-        # Форматируем треды для контекста
+        # Форматируем треды для контекста, теперь включая *все* сообщения треда
         threads_context = ""
-        for i, thread in enumerate(active_threads[:15]):  # Ограничиваем количество тредов
-            recent_messages = thread.get('messages', [])[:2]  # Берем 2 последних сообщения
-            messages_preview = "; ".join([msg[:100] for msg in recent_messages])
-            threads_context += f"{i + 1}. Тред #{thread['thread_id']} ({thread['classification_id']}): {thread['title']}\n   Сообщения: {messages_preview}\n\n"
+        for i, thread in enumerate(active_threads[:15]):  # Ограничиваем количество тредов для контекста
+            all_thread_messages = thread.get('messages', []) # Получаем все сообщения треда
+            # Формируем краткий превью темы и содержания
+            messages_preview = " ".join(all_thread_messages) if all_thread_messages else "Тред без сообщений."
+            # Ограничиваем длину превью, если оно слишком длинное
+            messages_preview = messages_preview[:300] + "..." if len(messages_preview) > 300 else messages_preview
+
+            threads_context += f"{i + 1}. Тред #{thread['thread_id']} (Классификация: {thread['classification_id']}):\n"
+            threads_context += f"   Заголовок: {thread['title']}\n"
+            threads_context += f"   Контекст (все сообщения): {messages_preview}\n\n"
 
         # Форматируем сообщения для классификации
         messages_context = ""
@@ -178,19 +211,32 @@ class ClassificationService:
 
         prompt = f"""
 Ты - ассистент для семантического связывания сообщений в IT-сообществе.
-Определи, относятся ли следующие сообщения по смыслу к одному из существующих тредов.
+Твоя задача - определить, относится ли каждое из следующих сообщений по смыслу к одному из существующих тредов.
 
 СУЩЕСТВУЮЩИЕ ТРЕДЫ:
 {threads_context}
 
-СООБЩЕНИЯ ДЛЯ КЛАССИФИКАЦИИ:
+СООБЩЕНИЯ ДЛЯ АНАЛИЗА:
 {messages_context}
 
 ПРОЦЕСС АНАЛИЗА:
-1. Проанализируй КАЖДОЕ сообщение отдельно
-2. Сравни его с каждым существующим тредом
-3. Если сообщение логически продолжает обсуждение в треде - свяжи их
-4. Если сообщение НЕ относится ни к одному треду - оставь related: false
+1. Внимательно проанализируй КАЖДОЕ сообщение из 'СООБЩЕНИЯ ДЛЯ АНАЛИЗА'.
+2. Сравни его с темой и содержанием КАЖДОГО треда из 'СУЩЕСТВУЮЩИЕ ТРЕДЫ'.
+3. Сообщение СВЯЗАНО с тредом, если:
+   - Оно логически продолжает обсуждение в треде.
+   - Оно напрямую отвечает на вопросы или касается темы, обсуждаемой в треде.
+   - Оно касается проекта, идеи или проблемы, которая была начата или описана в треде.
+   - Оно упоминает сущности (люди, проекты, задачи), обсуждаемые в треде, в контексте этого обсуждения.
+4. Сообщение НЕ СВЯЗАНО с тредом, если:
+   - Оно касается новой темы, не упомянутой в треде.
+   - Оно упоминает похожие слова, но в другом контексте, не относящемся к обсуждению треда.
+   - Оно описывает ситуацию, не имеющую отношения к теме или участникам обсуждения треда.
+
+Примеры (для понимания):
+- Тред о "боте для ПТСР". Сообщение: "Проблема с открытием xlsx". -> НЕ СВЯЗАНО (другая тема).
+- Тред о "боте для ПТСР". Сообщение: "Нужно добавить функцию А в бота". -> СВЯЗАНО (продолжение темы).
+
+ВАЖНО: Сообщение должно быть напрямую связано с темой и обсуждением внутри треда, а не просто упоминать похожие слова в другом контексте.
 
 Верни ответ ТОЛЬКО в формате JSON без дополнительного текста:
 
@@ -227,18 +273,23 @@ class ClassificationService:
 Проанализируй сообщения и определи их типы.
 
 ОПРЕДЕЛЕНИЯ:
-- "goal" - новая идея, проект, исследование или задача для выполнения
-- "blocker" - проблема или обстоятельство, мешающее работе  
-- "other" - обычное сообщение, не требующее отдельного треда
+- "goal" - новая идея, проект, исследование или задача для выполнения, которая может быть отслеживаемой.
+- "blocker" - проблема или обстоятельство, которое мешает работе над текущими целями или проектами, или которое нужно решить для прогресса. Это должна быть конкретная проблема, влияющая на продвижение вперед.
+- "other" - обычное сообщение, комментарий, факт, не требующее отдельного отслеживания как goal или blocker.
 
 СООБЩЕНИЯ ДЛЯ КЛАССИФИКАЦИИ:
 {messages_context}
 
 ПРОЦЕСС КЛАССИФИКАЦИИ:
-1. Проанализируй КАЖДОЕ сообщение отдельно
-2. Определи тип: goal, blocker или other
-3. Для goal/blocker придумай краткое название (3-5 слов)
-4. Оцени уверенность от 0 до 1
+1. Проанализируй КАЖДОЕ сообщение отдельно.
+2. Определи тип: goal, blocker или other. Строго следуй определениям.
+3. Для goal/blocker придумай краткое, информативное название (3-5 слов), отражающее суть.
+4. Оцени уверенность от 0 до 1. Уверенность должна отражать, насколько четко сообщение соответствует определению типа.
+
+Примеры (для понимания):
+- "Сделать MVP бота" -> "goal", "Сделать MVP".
+- "Проблема с xlsx" -> "blocker", если это мешает текущему проекту; иначе "other".
+- "Как дела?" -> "other".
 
 Верни ответ ТОЛЬКО в формате JSON без дополнительного текста:
 
@@ -289,8 +340,9 @@ class ClassificationService:
                         'confidence': float(result['confidence'])
                     })
                 else:
+                    logger.warning(f"Некорректный результат слинга: {result}. Помечено как unrelated.")
                     validated_results.append({
-                        'message_id': 0,
+                        'message_id': 0, # или None, если message_id неизвестен
                         'related': False,
                         'thread_id': None,
                         'confidence': 0.0
@@ -330,6 +382,7 @@ class ClassificationService:
                         'title': result.get('title')
                     })
                 else:
+                    logger.warning(f"Некорректный результат классификации: {result}. Помечено как 'other'.")
                     validated_results.append({
                         'classification': 'other',
                         'confidence': 0.0,
@@ -371,6 +424,7 @@ class ClassificationService:
                     'title': title
                 })
 
+            logger.warning(f"Использован резервный парсинг regex для классификации. Результаты: {results}")
             return results[:10]  # Ограничиваем количество результатов
 
         except Exception as e:
@@ -382,21 +436,25 @@ class ClassificationService:
         try:
             if result['classification'] in ['goal', 'blocker'] and result['confidence'] > 0.6:
                 title = result['title'] or message['message_text'][:50]
+                # Создаем новый тред с классификацией, определенной AI
                 thread_id = self.db.create_thread(title, result['classification'])
 
                 if thread_id > 0:
+                    # Привязываем сообщение к новому треду, устанавливая его классификацию
                     self.db.update_message_thread(
                         message['message_id'],
                         thread_id,
-                        result['classification']
+                        result['classification'] # <-- Классификация устанавливается из результата AI
                     )
-                    logger.debug(f"Создан тред {thread_id} для сообщения {message['message_id']}")
+                    logger.debug(f"Создан тред {thread_id} (классификация: {result['classification']}) для сообщения {message['message_id']}")
                     return True
                 else:
                     logger.error(f"Ошибка создания треда для сообщения {message['message_id']}")
                     return False
             else:
+                # Если классификация 'other' или уверенность низкая, не создаем тред
                 self.db.update_message_thread(message['message_id'], None, 'other')
+                logger.debug(f"Сообщение {message['message_id']} помечено как 'other', тред не создан.")
                 return True
 
         except Exception as e:
@@ -448,13 +506,14 @@ class ClassificationService:
             if message_data.get('parent_message_id'):
                 parent_thread = self.db.get_message_thread_by_parent(message_data['parent_message_id'])
                 if parent_thread:
+                    # Сообщение-реплай наследует тред и классификацию родителя
                     self.db.update_message_thread(
                         message_data['message_id'],
                         parent_thread['thread_id'],
                         parent_thread['classification_id']
                     )
                     logger.info(
-                        f"Сообщение {message_data['message_id']} привязано к треду {parent_thread['thread_id']} (наследование)")
+                        f"Сообщение {message_data['message_id']} привязано к треду {parent_thread['thread_id']} (наследование от родителя, классификация: {parent_thread['classification_id']})")
                     return True
             return False
         except Exception as e:
@@ -462,19 +521,23 @@ class ClassificationService:
             return False
 
     async def _step2_semantic_sling(self, message_data: Dict, message_text: str, active_threads: List[Dict]) -> bool:
-        """Шаг 2: Семантический слинг"""
+        """Шаг 2: Семантический слинг (индивидуальный вызов, если пакетный не используется)"""
         try:
+            # Используем индивидуальный вызов AI клиента, если пакетный не сработал
+            # ВАЖНО: Этот метод (semantic_sling_schema_c) должен быть реализован в ai_client
+            # и использовать обновленную логику, аналогичную пакетному промпту
             sling_result = await self.ai_client.semantic_sling_schema_c(message_text, active_threads)
             if sling_result.get('related') and sling_result.get('thread_id'):
                 thread = self.db.get_thread_by_id(sling_result['thread_id'])
                 if thread:
+                    # Привязываем сообщение к найденному треду, используя его классификацию
                     self.db.update_message_thread(
                         message_data['message_id'],
                         sling_result['thread_id'],
                         thread['classification_id']
                     )
                     logger.info(
-                        f"Сообщение {message_data['message_id']} привязано к треду {sling_result['thread_id']} (семантический слинг)")
+                        f"Сообщение {message_data['message_id']} привязано к треду {sling_result['thread_id']} (семантический слинг, классификация: {thread['classification_id']})")
                     return True
             return False
         except Exception as e:
@@ -482,8 +545,11 @@ class ClassificationService:
             return False
 
     async def _step3_new_entity_classification(self, message_data: Dict, message_text: str):
-        """Шаг 3: Классификация новой сущности"""
+        """Шаг 3: Классификация новой сущности (индивидуальный вызов)"""
         try:
+            # Используем индивидуальный вызов AI клиента
+            # ВАЖНО: Этот метод (classify_message_schema_b) должен быть реализован в ai_client
+            # и использовать обновленную логику, аналогичную пакетному промпту
             classification_result = await self.ai_client.classify_message_schema_b(message_text)
             if classification_result.get('classification') in ['goal', 'blocker']:
                 thread_id = self.db.create_thread(
@@ -491,17 +557,18 @@ class ClassificationService:
                     classification_result['classification']
                 )
                 if thread_id > 0:
+                    # Привязываем сообщение к новому треду, устанавливая его классификацию
                     self.db.update_message_thread(
                         message_data['message_id'],
                         thread_id,
                         classification_result['classification']
                     )
-                    logger.info(f"Создан новый тред {thread_id} для сообщения {message_data['message_id']}")
+                    logger.info(f"Создан новый тред {thread_id} (классификация: {classification_result['classification']}) для сообщения {message_data['message_id']}")
                 else:
                     logger.error(f"Ошибка создания треда для сообщения {message_data['message_id']}")
             else:
                 self.db.update_message_thread(message_data['message_id'], None, 'other')
-                logger.info(f"Сообщение {message_data['message_id']} помечено как 'other'")
+                logger.info(f"Сообщение {message_data['message_id']} помечено как 'other' (индивидуальная классификация)")
         except Exception as e:
             logger.error(f"Ошибка в шаге 3 для сообщения {message_data['message_id']}: {e}")
 
